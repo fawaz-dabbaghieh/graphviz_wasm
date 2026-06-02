@@ -16,13 +16,81 @@ This is a high-performance WebAssembly compilation of the Bandage graph layout a
 ## Architecture
 
 ```
-├── src/           # C++ source files (Qt-free port)
-├── include/       # C++ headers
-├── build/         # Emscripten build output
-├── js/            # JavaScript/TypeScript wrapper and Web Worker
-├── examples/      # Usage examples
-└── tests/         # Test files
+├── frontend/      # React/Vite web visualizer
+├── backend/       # FastAPI service for server-side graph requests
+├── src/           # C++ source files for the WASM layout engine
+├── include/       # C++ headers for the WASM layout engine
+├── js/            # Built JavaScript/WASM wrapper used by the frontend
+└── examples/      # Usage examples for the layout package
 ```
+
+## Local Development
+
+The app currently runs as two local services:
+
+- The frontend is the React/Vite visualizer.
+- The backend is a FastAPI API that can run controlled server-side commands.
+
+For the current backend smoke test, the browser calls `GET /api/test-text`; the
+backend runs a controlled `cat backend/indexed_example/test.txt` command and
+returns the command output to the frontend.
+
+### Required Packages
+
+Inside your Conda environment, install Python and Node tooling:
+
+```bash
+conda activate bandagejs
+conda install -c conda-forge python nodejs fastapi uvicorn
+```
+
+Alternatively, if Python and Node are already installed in the environment, only
+install the backend Python dependencies:
+
+```bash
+pip install -r backend/requirements.txt
+```
+
+Then install the frontend JavaScript dependencies:
+
+```bash
+cd frontend
+npm install
+```
+
+### Start The Backend
+
+From the repository root:
+
+```bash
+conda activate bandagejs
+python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000 --reload
+```
+
+The backend API will be available at:
+
+```text
+http://127.0.0.1:8000
+```
+
+### Start The Frontend
+
+In a second terminal:
+
+```bash
+conda activate bandagejs
+cd frontend
+npm run dev
+```
+
+Open the Vite URL shown in the terminal, usually:
+
+```text
+http://localhost:5173
+```
+
+Click **Backend Test** to confirm the frontend can reach the backend. A popup
+should show the contents of `backend/indexed_example/test.txt`.
 
 ## Dependencies Analysis
 
