@@ -117,6 +117,27 @@ body:has(.app.dark-mode) {
   gap: 5px;
 }
 
+/* Temporary smoke-test control for checking that the frontend can reach the
+   FastAPI backend before we wire this to real gfaidx subgraph extraction. */
+.backend-test-button {
+  padding: 6px 12px;
+  background: #0066cc;
+  border: 1px solid #0052a3;
+  color: white;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.backend-test-button:hover {
+  background: #0052a3;
+}
+
+.app.dark-mode .backend-test-button {
+  background: #1d6fb8;
+  border-color: #2e83cf;
+  color: #fff;
+}
+
 .menu-item {
   position: relative;
 }

@@ -120,6 +120,28 @@ function App({ worker }: AppProps) {
     }
   }, [urlInput, loadGFAFromText])
 
+  // This is the first backend integration smoke test: call a fixed API endpoint
+  // and show the server-side file contents so we know browser-to-backend wiring
+  // works before adding real gfaidx extraction requests.
+  const handleBackendTest = useCallback(async () => {
+    const backendUrl =
+      import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:8000'
+
+    try {
+      const response = await fetch(`${backendUrl}/api/test-text`)
+      if (!response.ok) {
+        throw new Error(`Backend returned HTTP ${response.status}`)
+      }
+
+      const text = await response.text()
+      alert(text)
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Failed to contact backend'
+      alert(`Backend request failed: ${message}`)
+    }
+  }, [])
+
   // Handle loading from predefined URL example
   const handleLoadURLExample = useCallback(
     async (url: string, name: string) => {
@@ -428,6 +450,9 @@ function App({ worker }: AppProps) {
               )}
             </div>
           </div>
+          <button className="backend-test-button" onClick={handleBackendTest}>
+            Backend Test
+          </button>
         </div>
       </header>
 
