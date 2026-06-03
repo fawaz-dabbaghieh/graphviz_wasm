@@ -240,9 +240,9 @@ export function LayoutControls({
               </label>
               <input
                 type="range"
-                min="1"
-                max="100000"
-                step="100"
+                min="0.5"
+                max="20"
+                step="0.5"
                 value={options.edgeLength}
                 onChange={e =>
                   onChange({

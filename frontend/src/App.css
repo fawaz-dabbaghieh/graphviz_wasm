@@ -111,14 +111,38 @@ body:has(.app.dark-mode) {
   font-weight: normal;
 }
 
+.graph-selection-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+  padding: 10px 20px 0 20px;
+  border-top: 1px solid #e6e6e6;
+  flex-wrap: wrap;
+}
+
+.graph-selection-title {
+  font-size: 20px;
+  font-weight: normal;
+  color: #555;
+}
+
+.app.dark-mode .graph-selection-bar {
+  border-top-color: #444;
+}
+
+.app.dark-mode .graph-selection-title {
+  color: #bbb;
+}
+
 /* Menu Bar */
 .menu-bar {
   display: flex;
   gap: 5px;
 }
 
-/* Backend-backed subgraph extraction controls. These stay compact in the header
-   because the returned GFA is loaded into the existing graph view. */
+/* Backend-backed subgraph extraction controls. The returned GFA is loaded into
+   the existing graph view, so the form only needs request parameters. */
 .subgraph-form {
   display: flex;
   align-items: center;

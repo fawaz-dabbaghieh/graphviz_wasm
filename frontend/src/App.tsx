@@ -44,7 +44,7 @@ function App({ worker }: AppProps) {
     const saved = localStorage.getItem('darkMode')
     return saved !== null ? JSON.parse(saved) : true
   })
-  const [colorScheme, setColorScheme] = useState<ColorScheme>('random')
+  const [colorScheme, setColorScheme] = useState<ColorScheme>('gc-content')
   const [zoom, setZoom] = useState<number>(1) // Controls zoom (from slider)
   const [displayZoom, setDisplayZoom] = useState<number>(1) // Shows current zoom (from canvas)
   const [contigThickness, setContigThickness] = useState<number>(6)
@@ -253,18 +253,6 @@ function App({ worker }: AppProps) {
     [loadGFAFromText],
   )
 
-  // Load MT.gfa by default on first load
-  useEffect(() => {
-    if (!currentGraph) {
-      const mtExample = urlExamples.find(
-        ex => ex.name === 'MT GFA-spec example',
-      )
-      if (mtExample) {
-        handleLoadURLExample(mtExample.url, mtExample.name)
-      }
-    }
-  }, [currentGraph, handleLoadURLExample])
-
   useEffect(() => {
     if (!currentGraph?.paths) {
       setSelectedPathNames([])
@@ -305,7 +293,10 @@ function App({ worker }: AppProps) {
 
   // Auto-compute on graph change (but not on layout options change)
   useEffect(() => {
-    if (!worker) return
+    if (!worker || !currentGraph) {
+      setIsComputing(false)
+      return
+    }
 
     // Increment request ID for this new computation
     const currentRequestId = ++requestIdRef.current
@@ -313,8 +304,6 @@ function App({ worker }: AppProps) {
     const runLayout = async () => {
       setIsComputing(true)
       try {
-        if (!currentGraph) return
-
         const { result, duration } = await worker.computeLayout(
           currentGraph,
           layoutOptions,
@@ -506,6 +495,9 @@ function App({ worker }: AppProps) {
               )}
             </div>
           </div>
+        </div>
+        <div className="graph-selection-bar">
+          <div className="graph-selection-title">Graph Selection</div>
           {/* This form is the first real backend integration: it sends a small
               validated request to FastAPI, which runs gfaidx and returns GFA. */}
           <form
