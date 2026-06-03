@@ -1685,14 +1685,44 @@ export function GraphCanvas({
           const toNode = displayGraph.nodesByKey.get(edge.toNodeKey)?.node
           if (!fromNode || !toNode) return null
 
+          const visiblePathTraversals = drawPaths
+            ? getVisiblePathTraversals(edge.pathTraversals)
+            : edge.pathTraversals
           const visibleEdgePathIds = Array.from(
-            new Set(
-              (drawPaths
-                ? getVisiblePathTraversals(edge.pathTraversals)
-                : edge.pathTraversals
-              ).map(traversal => traversal.pathId),
-            ),
+            new Set(visiblePathTraversals.map(traversal => traversal.pathId)),
           )
+
+          // Path overlays are directional even though the base graph edge is
+          // drawn as one collapsed connection. Group tooltip entries by the
+          // exact oriented traversal so users can see which paths go through
+          // e.g. "53728108+ -> 53728106-" versus the opposite orientation.
+          const pathDirectionGroups = Array.from(
+            visiblePathTraversals.reduce(
+              (groups, traversal) => {
+                const directionKey = `${traversal.edge.from}->${traversal.edge.to}`
+                const existingGroup = groups.get(directionKey)
+
+                if (existingGroup) {
+                  existingGroup.pathIds.add(traversal.pathId)
+                } else {
+                  groups.set(directionKey, {
+                    from: traversal.edge.from,
+                    to: traversal.edge.to,
+                    pathIds: new Set([traversal.pathId]),
+                  })
+                }
+
+                return groups
+              },
+              new Map<
+                string,
+                { from: string; to: string; pathIds: Set<string> }
+              >(),
+            ).values(),
+          ).map(group => ({
+            ...group,
+            pathIds: Array.from(group.pathIds),
+          }))
 
           return (
             <div
@@ -1740,27 +1770,39 @@ export function GraphCanvas({
                         ):
                       </strong>
                     </div>
-                    {visibleEdgePathIds.map(pathId => (
+                    {pathDirectionGroups.map(group => (
                       <div
-                        key={pathId}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '6px',
-                          marginLeft: '8px',
-                          opacity: 0.8,
-                        }}
+                        key={`${group.from}->${group.to}`}
+                        style={{ marginTop: '5px' }}
                       >
-                        <div
-                          style={{
-                            width: '12px',
-                            height: '12px',
-                            backgroundColor: getPathColor(pathId),
-                            borderRadius: '2px',
-                            flexShrink: 0,
-                          }}
-                        />
-                        {pathId}
+                        <div style={{ marginLeft: '8px', opacity: 0.9 }}>
+                          <strong>
+                            {group.from} → {group.to}
+                          </strong>
+                        </div>
+                        {group.pathIds.map(pathId => (
+                          <div
+                            key={`${group.from}->${group.to}:${pathId}`}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '6px',
+                              marginLeft: '18px',
+                              opacity: 0.8,
+                            }}
+                          >
+                            <div
+                              style={{
+                                width: '12px',
+                                height: '12px',
+                                backgroundColor: getPathColor(pathId),
+                                borderRadius: '2px',
+                                flexShrink: 0,
+                              }}
+                            />
+                            {pathId}
+                          </div>
+                        ))}
                       </div>
                     ))}
                   </div>
