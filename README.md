@@ -29,11 +29,13 @@ This is a high-performance WebAssembly compilation of the Bandage graph layout a
 The app currently runs as two local services:
 
 - The frontend is the React/Vite visualizer.
-- The backend is a FastAPI API that can run controlled server-side commands.
+- The backend is a FastAPI API that runs controlled server-side `gfaidx`
+  extraction commands.
 
-For the current backend smoke test, the browser calls `GET /api/test-text`; the
-backend runs a controlled `cat backend/indexed_example/test.txt` command and
-returns the command output to the frontend.
+For the current backend integration, the browser calls `POST
+/api/extract-subgraph`; the backend runs `gfaidx get_subgraph` against the
+whitelisted `chr22` indexed graph and returns the extracted GFA to the
+visualizer.
 
 ### Required Packages
 
@@ -89,8 +91,9 @@ Open the Vite URL shown in the terminal, usually:
 http://localhost:5173
 ```
 
-Click **Backend Test** to confirm the frontend can reach the backend. A popup
-should show the contents of `backend/indexed_example/test.txt`.
+Use the graph selector, start-node field, and max-node field in the header to
+extract a subgraph from the backend. The backend currently limits extraction to
+`chr22` and refuses requests above 10000 nodes.
 
 ## Dependencies Analysis
 

@@ -117,25 +117,108 @@ body:has(.app.dark-mode) {
   gap: 5px;
 }
 
-/* Temporary smoke-test control for checking that the frontend can reach the
-   FastAPI backend before we wire this to real gfaidx subgraph extraction. */
-.backend-test-button {
-  padding: 6px 12px;
+/* Backend-backed subgraph extraction controls. These stay compact in the header
+   because the returned GFA is loaded into the existing graph view. */
+.subgraph-form {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.subgraph-select,
+.subgraph-input {
+  height: 31px;
+  padding: 5px 8px;
+  border: 1px solid #ccc;
+  background: white;
+  color: #333;
+  font-size: 13px;
+}
+
+.subgraph-input {
+  width: 130px;
+}
+
+.subgraph-input-small {
+  width: 90px;
+}
+
+.subgraph-submit {
+  height: 31px;
+  padding: 5px 12px;
   background: #0066cc;
   border: 1px solid #0052a3;
   color: white;
   cursor: pointer;
-  font-size: 14px;
+  font-size: 13px;
 }
 
-.backend-test-button:hover {
+.subgraph-submit:hover:not(:disabled) {
   background: #0052a3;
 }
 
-.app.dark-mode .backend-test-button {
+.subgraph-submit:disabled,
+.subgraph-select:disabled,
+.subgraph-input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.app.dark-mode .subgraph-select,
+.app.dark-mode .subgraph-input {
+  background: #3a3a3a;
+  border-color: #555;
+  color: #e0e0e0;
+}
+
+.app.dark-mode .subgraph-submit {
   background: #1d6fb8;
   border-color: #2e83cf;
   color: #fff;
+}
+
+/* Global load/extraction error display. gfaidx can return useful multiline
+   stderr, so preserve whitespace instead of collapsing it into one line. */
+.load-error-banner {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 15px 0;
+  padding: 10px 12px;
+  background: #fff2f2;
+  border: 1px solid #f0b4b4;
+  color: #9b1c1c;
+}
+
+.load-error-banner pre {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+}
+
+.load-error-banner button {
+  padding: 4px 8px;
+  border: 1px solid #d78c8c;
+  background: white;
+  color: #9b1c1c;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.app.dark-mode .load-error-banner {
+  background: #341f1f;
+  border-color: #704040;
+  color: #ffb8b8;
+}
+
+.app.dark-mode .load-error-banner button {
+  background: #2a2a2a;
+  border-color: #704040;
+  color: #ffb8b8;
 }
 
 .menu-item {

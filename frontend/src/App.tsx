@@ -55,6 +55,10 @@ function App({ worker }: AppProps) {
   // Keep path visibility in the React layer so toggling paths never requires
   // recomputing the layout itself.
   const [selectedPathNames, setSelectedPathNames] = useState<string[]>([])
+  const [selectedIndexedGraph, setSelectedIndexedGraph] = useState('chr22')
+  const [subgraphStartNode, setSubgraphStartNode] = useState('')
+  const [subgraphMaxNodes, setSubgraphMaxNodes] = useState('200')
+  const [isExtractingSubgraph, setIsExtractingSubgraph] = useState(false)
 
   // Drop any stale selections from a previous graph load and preserve the
   // current graph's path ordering for the selector.
@@ -120,27 +124,79 @@ function App({ worker }: AppProps) {
     }
   }, [urlInput, loadGFAFromText])
 
-  // This is the first backend integration smoke test: call a fixed API endpoint
-  // and show the server-side file contents so we know browser-to-backend wiring
-  // works before adding real gfaidx extraction requests.
-  const handleBackendTest = useCallback(async () => {
+  // Ask the backend to run gfaidx against a whitelisted indexed graph, then feed
+  // the returned GFA text through the same parser used for uploaded files.
+  const handleExtractSubgraph = useCallback(async () => {
+    const startNode = subgraphStartNode.trim()
+    const maxNodes = Number(subgraphMaxNodes)
+
+    if (!startNode) {
+      setLoadError('Enter a start node ID before extracting a subgraph')
+      return
+    }
+
+    if (!Number.isInteger(maxNodes) || maxNodes < 1) {
+      setLoadError('Neighborhood size must be a positive integer')
+      return
+    }
+
     const backendUrl =
       import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:8000'
 
     try {
-      const response = await fetch(`${backendUrl}/api/test-text`)
+      setIsExtractingSubgraph(true)
+      setLoadError(null)
+
+      const response = await fetch(`${backendUrl}/api/extract-subgraph`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          graph_id: selectedIndexedGraph,
+          start_node: startNode,
+          max_nodes: maxNodes,
+        }),
+      })
+
       if (!response.ok) {
-        throw new Error(`Backend returned HTTP ${response.status}`)
+        const contentType = response.headers.get('content-type') ?? ''
+        let errorText = ''
+
+        if (contentType.includes('application/json')) {
+          const errorBody = (await response.json()) as { detail?: unknown }
+
+          // FastAPI returns either a string detail from our HTTPException or a
+          // validation array from Pydantic. Flatten both into readable UI text.
+          errorText =
+            typeof errorBody.detail === 'string'
+              ? errorBody.detail
+              : JSON.stringify(errorBody.detail)
+        } else {
+          errorText = await response.text()
+        }
+
+        throw new Error(errorText || `Backend returned HTTP ${response.status}`)
       }
 
-      const text = await response.text()
-      alert(text)
+      const gfaText = await response.text()
+      loadGFAFromText(
+        gfaText,
+        `${selectedIndexedGraph}_${startNode}_${maxNodes}_nodes.gfa`,
+      )
     } catch (error) {
       const message =
-        error instanceof Error ? error.message : 'Failed to contact backend'
-      alert(`Backend request failed: ${message}`)
+        error instanceof Error ? error.message : 'Failed to extract subgraph'
+      setLoadError(message)
+    } finally {
+      setIsExtractingSubgraph(false)
     }
-  }, [])
+  }, [
+    loadGFAFromText,
+    selectedIndexedGraph,
+    subgraphMaxNodes,
+    subgraphStartNode,
+  ])
 
   // Handle loading from predefined URL example
   const handleLoadURLExample = useCallback(
@@ -450,11 +506,63 @@ function App({ worker }: AppProps) {
               )}
             </div>
           </div>
-          <button className="backend-test-button" onClick={handleBackendTest}>
-            Backend Test
-          </button>
+          {/* This form is the first real backend integration: it sends a small
+              validated request to FastAPI, which runs gfaidx and returns GFA. */}
+          <form
+            className="subgraph-form"
+            onSubmit={event => {
+              event.preventDefault()
+              handleExtractSubgraph()
+            }}
+          >
+            <select
+              className="subgraph-select"
+              value={selectedIndexedGraph}
+              onChange={event => setSelectedIndexedGraph(event.target.value)}
+              disabled={isExtractingSubgraph}
+            >
+              <option value="chr22">chr22</option>
+            </select>
+            <input
+              className="subgraph-input"
+              type="text"
+              value={subgraphStartNode}
+              onChange={event => setSubgraphStartNode(event.target.value)}
+              placeholder="Start node ID"
+              disabled={isExtractingSubgraph}
+            />
+            <input
+              className="subgraph-input subgraph-input-small"
+              type="number"
+              min="1"
+              max="10000"
+              step="1"
+              value={subgraphMaxNodes}
+              onChange={event => setSubgraphMaxNodes(event.target.value)}
+              placeholder="Max nodes"
+              disabled={isExtractingSubgraph}
+            />
+            <button
+              className="subgraph-submit"
+              type="submit"
+              disabled={isExtractingSubgraph}
+            >
+              {isExtractingSubgraph ? 'Extracting...' : 'Extract'}
+            </button>
+          </form>
         </div>
       </header>
+
+      {/* Surface file/backend load failures outside modal dialogs. Without this
+          banner, extraction errors are stored but easy for users to miss. */}
+      {loadError && !urlDialogOpen && (
+        <div className="load-error-banner" role="alert">
+          <pre>{loadError}</pre>
+          <button type="button" onClick={() => setLoadError(null)}>
+            Dismiss
+          </button>
+        </div>
+      )}
 
       <main className="app-main">
         <div className="left-panel">
