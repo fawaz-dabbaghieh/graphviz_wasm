@@ -1,6 +1,12 @@
 # Bandage Layout JS
 
 WebAssembly port of Bandage graph layout engine for JavaScript/TypeScript.
+This was originally forked from https://github.com/cmdcolin/BandageJS.
+What has been/being added:
+* The way paths and edges are interpreted, originally if the edges was written in both direction, then the nodes were being duplicated, not anymore
+* Adding support for indexed graphs with gfaidx, which allows the user to jump around in huge graphs and visualize smaller parts of the graph instantly
+* Including backend API for gfaidx
+
 
 ## Overview
 
