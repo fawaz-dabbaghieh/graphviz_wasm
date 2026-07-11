@@ -27,6 +27,12 @@ Then run the API server:
 python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
+If I want it to be accessible accross thre network, then I can run this
+
+```bash
+python -m uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
 In another terminal, run the frontend:
 
 ```bash
