@@ -90,7 +90,6 @@ export function LayoutControls({
                 <option value="uniform">Uniform Color</option>
                 <option value="random">Rainbow</option>
                 <option value="depth">Color by Depth</option>
-                <option value="gc-content">Color by Length (GC proxy)</option>
                 <option value="grey">Grey</option>
               </select>
             </div>

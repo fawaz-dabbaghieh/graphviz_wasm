@@ -111,14 +111,14 @@ export function GraphExtractionControls({
                 className="control-input"
                 type="number"
                 min="1"
-                max="10000"
                 step="1"
                 value={maxNodes}
                 onChange={event => onMaxNodesChange(event.currentTarget.value)}
                 disabled={controlsDisabled}
               />
               <div className="control-hint">
-                Applies to both node and coordinate extraction.
+                Applies to both node and coordinate extraction. No testing cap is
+                enforced here.
               </div>
             </div>
 

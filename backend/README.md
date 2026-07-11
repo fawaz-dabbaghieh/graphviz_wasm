@@ -67,7 +67,8 @@ backend/gfaidx_bin/gfaidx get_subgraph \
 
 The API reads `TMP_OUTPUT.gfa`, returns its GFA text to the browser, and deletes
 the temporary file automatically. Requests are currently limited to the
-registered graphs and at most 10000 nodes.
+registered graphs. `max_nodes` is still required and must be at least 1, but it
+is not capped by the backend while we are testing larger graph sizes locally.
 
 For coordinate-region extraction, the frontend first calls:
 

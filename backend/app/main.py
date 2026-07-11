@@ -30,7 +30,7 @@ app.add_middleware(
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 GFAIDX_BINARY = BACKEND_ROOT / "gfaidx_bin" / "gfaidx"
 GRAPH_REGISTRY_PATH = BACKEND_ROOT / "graphs.tsv"
-MAX_ALLOWED_NODES = 10_000
+GFAIDX_EXTRACTION_TIMEOUT_SECONDS = 300
 
 
 @dataclass(frozen=True)
@@ -136,14 +136,6 @@ def get_graph_entry(graph_id: str) -> GraphRegistryEntry:
         raise HTTPException(status_code=500, detail="Indexed graph was not found")
 
     return graph_entry
-
-
-def validate_max_nodes(max_nodes: int) -> None:
-    if max_nodes > MAX_ALLOWED_NODES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Neighborhood size is limited to {MAX_ALLOWED_NODES} nodes",
-        )
 
 
 def ensure_gfaidx_binary() -> None:
@@ -264,7 +256,6 @@ def extract_subgraph(request: SubgraphRequest) -> str:
     if not request.start_node.strip():
         raise HTTPException(status_code=400, detail="Start node ID is required")
 
-    validate_max_nodes(request.max_nodes)
     ensure_gfaidx_binary()
 
     try:
@@ -288,7 +279,7 @@ def extract_subgraph(request: SubgraphRequest) -> str:
                 check=True,
                 capture_output=True,
                 text=True,
-                timeout=60,
+                timeout=GFAIDX_EXTRACTION_TIMEOUT_SECONDS,
             )
 
             return read_gfaidx_output(output_path)
@@ -326,7 +317,6 @@ def extract_region(request: RegionRequest) -> str:
     if request.end <= request.start:
         raise HTTPException(status_code=400, detail="Region end must be greater than start")
 
-    validate_max_nodes(request.max_nodes)
     ensure_gfaidx_binary()
 
     region = f"{sequence}:{request.start}-{request.end}"
@@ -349,7 +339,7 @@ def extract_region(request: RegionRequest) -> str:
                 check=True,
                 capture_output=True,
                 text=True,
-                timeout=60,
+                timeout=GFAIDX_EXTRACTION_TIMEOUT_SECONDS,
             )
 
             return read_gfaidx_output(output_path)

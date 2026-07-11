@@ -68,7 +68,7 @@ function App({ worker }: AppProps) {
     const saved = localStorage.getItem('darkMode')
     return saved !== null ? JSON.parse(saved) : true
   })
-  const [colorScheme, setColorScheme] = useState<ColorScheme>('gc-content')
+  const [colorScheme, setColorScheme] = useState<ColorScheme>('uniform')
   const [zoom, setZoom] = useState<number>(1)
   const [zoomRequestId, setZoomRequestId] = useState(0)
   const [displayZoom, setDisplayZoom] = useState<number>(1)
@@ -264,6 +264,7 @@ function App({ worker }: AppProps) {
       const graph = convertGFAToGraph(gfaGraph, filename)
 
       setCurrentGraph(graph)
+      setColorScheme('uniform')
       setDrawLabels(false)
       setFileMenuOpen(false)
       setExamplesMenuOpen(false)

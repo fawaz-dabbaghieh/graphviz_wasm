@@ -371,23 +371,6 @@ function GraphCanvasComponent({
           }
         }
 
-        case 'gc-content': {
-          // For demo purposes, use length as proxy for GC content (would need actual sequence data)
-          const allLengths = graph.nodes.map(n => n.length)
-          const minLen = Math.min(...allLengths)
-          const maxLen = Math.max(...allLengths)
-          const normalized =
-            maxLen > minLen ? (node.length - minLen) / (maxLen - minLen) : 0.5
-
-          // Red to blue gradient
-          const t = Math.max(0, Math.min(1, normalized))
-          return [
-            Math.round(220 + (50 - 220) * t),
-            Math.round(50 + (120 - 50) * t),
-            Math.round(50 + (220 - 50) * t),
-          ]
-        }
-
         case 'grey':
           // Medium grey color
           return [160, 160, 160]

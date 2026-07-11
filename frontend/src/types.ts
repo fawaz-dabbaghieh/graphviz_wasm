@@ -109,4 +109,4 @@ export interface DetailsDialog {
   nodeId: string | null
 }
 
-export type ColorScheme = 'uniform' | 'random' | 'depth' | 'gc-content' | 'grey'
+export type ColorScheme = 'uniform' | 'random' | 'depth' | 'grey'
