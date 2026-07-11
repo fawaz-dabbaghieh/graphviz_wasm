@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
+import { memo, useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import {
   useFloating,
   offset,
@@ -30,8 +30,8 @@ interface GraphCanvasProps {
   isDarkMode?: boolean
   colorScheme?: ColorScheme
   zoom?: number
-  onZoomChange?: (zoom: number) => void
-  onInternalZoomChange?: (zoom: number) => void // For display only, doesn't control zoom
+  zoomRequestId?: number
+  onInternalZoomChange?: (zoom: number) => void
   contigThickness?: number
   connectorThickness?: number
   drawLabels?: boolean
@@ -62,7 +62,7 @@ function formatSequencePreview(sequence: string): string {
   return `${sequence.slice(0, SEQUENCE_PREVIEW_PREFIX_LENGTH)}.........${sequence.slice(-SEQUENCE_PREVIEW_SUFFIX_LENGTH)}`
 }
 
-export function GraphCanvas({
+function GraphCanvasComponent({
   layoutResult,
   graph,
   width = 800,
@@ -70,7 +70,7 @@ export function GraphCanvas({
   isDarkMode = true,
   colorScheme = 'uniform',
   zoom,
-  onZoomChange,
+  zoomRequestId = 0,
   onInternalZoomChange,
   contigThickness = 6,
   connectorThickness = 3,
@@ -86,6 +86,14 @@ export function GraphCanvas({
     translateX: 0,
     translateY: 0,
   })
+  const transformRef = useRef<Transform>({
+    scale: 1,
+    translateX: 0,
+    translateY: 0,
+  })
+  const handledZoomRequestIdRef = useRef(zoomRequestId)
+  const zoomReportFrameRef = useRef<number | null>(null)
+  const pendingZoomReportRef = useRef<number | null>(null)
   const [hoveredNode, setHoveredNode] = useState<string | null>(null)
   const [hoveredEdge, setHoveredEdge] = useState<number | null>(null)
   const [selectedNode, setSelectedNode] = useState<string | null>(null)
@@ -133,6 +141,34 @@ export function GraphCanvas({
     offsetY: number
   } | null>(null)
 
+  const reportInternalZoom = useCallback(
+    (nextZoom: number) => {
+      if (!onInternalZoomChange) return
+
+      pendingZoomReportRef.current = nextZoom
+      if (zoomReportFrameRef.current !== null) return
+
+      zoomReportFrameRef.current = window.requestAnimationFrame(() => {
+        zoomReportFrameRef.current = null
+        const zoomToReport = pendingZoomReportRef.current
+        pendingZoomReportRef.current = null
+        if (zoomToReport !== null) {
+          onInternalZoomChange(zoomToReport)
+        }
+      })
+    },
+    [onInternalZoomChange],
+  )
+
+  useEffect(
+    () => () => {
+      if (zoomReportFrameRef.current !== null) {
+        window.cancelAnimationFrame(zoomReportFrameRef.current)
+      }
+    },
+    [],
+  )
+
   // Calculate bounds once when layout changes
   useEffect(() => {
     if (!layoutResult) return
@@ -162,41 +198,46 @@ export function GraphCanvas({
     const offsetX = (width - graphWidth * fitScale) / 2 - minX * fitScale
     const offsetY = (height - graphHeight * fitScale) / 2 - minY * fitScale
 
-    boundsRef.current = { minX, maxX, minY, maxY, fitScale, offsetX, offsetY }
-    setTransform({ scale: fitScale, translateX: offsetX, translateY: offsetY })
-
-    // Notify parent of internal zoom change (for display only)
-    if (onInternalZoomChange) {
-      onInternalZoomChange(fitScale)
+    const nextTransform = {
+      scale: fitScale,
+      translateX: offsetX,
+      translateY: offsetY,
     }
+
+    boundsRef.current = { minX, maxX, minY, maxY, fitScale, offsetX, offsetY }
+    transformRef.current = nextTransform
+    setTransform(nextTransform)
+
+    reportInternalZoom(fitScale)
 
     // Reset modified positions when layout changes
     setModifiedNodePositions(null)
-  }, [layoutResult, width, height, onInternalZoomChange])
+  }, [layoutResult, width, height, reportInternalZoom])
 
-  // Sync zoom prop to transform (from slider only, no feedback loop)
+  // Sync zoom prop to transform when the sidebar slider sends an explicit
+  // command. Wheel zoom intentionally does not update this prop.
   useEffect(() => {
     if (zoom === undefined) return
+    if (handledZoomRequestIdRef.current === zoomRequestId) return
 
-    // Only update if zoom has meaningfully changed
-    if (Math.abs(zoom - transform.scale) < 0.0001) {
-      return
+    handledZoomRequestIdRef.current = zoomRequestId
+
+    const prev = transformRef.current
+    if (Math.abs(zoom - prev.scale) < 0.0001) return
+
+    const scaleFactor = zoom / prev.scale
+    const centerX = width / 2
+    const centerY = height / 2
+
+    const nextTransform = {
+      scale: zoom,
+      translateX: centerX - (centerX - prev.translateX) * scaleFactor,
+      translateY: centerY - (centerY - prev.translateY) * scaleFactor,
     }
 
-    // External zoom change (from slider), update transform
-    setTransform(prev => {
-      const scaleFactor = zoom / prev.scale
-      const centerX = width / 2
-      const centerY = height / 2
-
-      return {
-        scale: zoom,
-        translateX: centerX - (centerX - prev.translateX) * scaleFactor,
-        translateY: centerY - (centerY - prev.translateY) * scaleFactor,
-      }
-    })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [zoom, width, height])
+    transformRef.current = nextTransform
+    setTransform(nextTransform)
+  }, [zoom, zoomRequestId, width, height])
 
   // Generate path colors (same logic as in draw function)
   const getPathColor = useCallback(
@@ -1035,26 +1076,26 @@ export function GraphCanvas({
       const delta = -e.deltaY * 0.001
       const scaleFactor = Math.exp(delta)
 
-      setTransform(prev => {
-        const newScale = clampZoom(prev.scale * scaleFactor)
-        const actualFactor = newScale / prev.scale
+      const prev = transformRef.current
+      const newScale = clampZoom(prev.scale * scaleFactor)
+      if (Math.abs(newScale - prev.scale) < 0.0001) return
 
-        // Notify parent of internal zoom change (for display only)
-        if (onInternalZoomChange && newScale !== prev.scale) {
-          onInternalZoomChange(newScale)
-        }
+      const actualFactor = newScale / prev.scale
 
-        return {
-          scale: newScale,
-          translateX: mouseX - (mouseX - prev.translateX) * actualFactor,
-          translateY: mouseY - (mouseY - prev.translateY) * actualFactor,
-        }
-      })
+      const nextTransform = {
+        scale: newScale,
+        translateX: mouseX - (mouseX - prev.translateX) * actualFactor,
+        translateY: mouseY - (mouseY - prev.translateY) * actualFactor,
+      }
+
+      transformRef.current = nextTransform
+      setTransform(nextTransform)
+      reportInternalZoom(newScale)
     }
 
     canvas.addEventListener('wheel', wheelHandler, { passive: false })
     return () => canvas.removeEventListener('wheel', wheelHandler)
-  }, [onInternalZoomChange])
+  }, [reportInternalZoom])
 
   // Hit detection helper - distance from point to line segment
   const distanceToSegment = (
@@ -1187,11 +1228,15 @@ export function GraphCanvas({
         const dx = e.clientX - dragStart.x
         const dy = e.clientY - dragStart.y
 
-        setTransform(prev => ({
+        const prev = transformRef.current
+        const nextTransform = {
           ...prev,
           translateX: prev.translateX + dx,
           translateY: prev.translateY + dy,
-        }))
+        }
+
+        transformRef.current = nextTransform
+        setTransform(nextTransform)
 
         setDragStart({ x: e.clientX, y: e.clientY })
       } else {
@@ -1814,3 +1859,5 @@ export function GraphCanvas({
     </div>
   )
 }
+
+export const GraphCanvas = memo(GraphCanvasComponent)

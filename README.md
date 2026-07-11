@@ -38,9 +38,10 @@ The app currently runs as two local services:
 - The backend is a FastAPI API that runs controlled server-side `gfaidx`
   extraction commands.
 
-For the current backend integration, the browser calls `POST
-/api/extract-subgraph`; the backend runs `gfaidx get_subgraph` against the
-whitelisted `chr22` indexed graph and returns the extracted GFA to the
+For the current backend integration, the browser calls `GET /api/graphs` to
+load the server-side graph registry, then calls `POST /api/extract-subgraph` or
+`POST /api/extract-region`. The backend runs controlled `gfaidx` commands
+against registered indexed graphs and returns the extracted GFA to the
 visualizer.
 
 ### Required Packages
@@ -97,9 +98,10 @@ Open the Vite URL shown in the terminal, usually:
 http://localhost:5173
 ```
 
-Use the graph selector, start-node field, and max-node field in the header to
-extract a subgraph from the backend. The backend currently limits extraction to
-`chr22` and refuses requests above 10000 nodes.
+Use the graph selection panel in the left sidebar to extract either a
+node-neighborhood subgraph or a coordinate-region subgraph from the backend. The
+backend currently ships with a `chr22` registry entry and refuses requests above
+10000 nodes.
 
 ## Dependencies Analysis
 
