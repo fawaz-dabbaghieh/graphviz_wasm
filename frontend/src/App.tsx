@@ -5,6 +5,7 @@ import { LayoutControls } from './components/LayoutControls'
 import { PathsLegend } from './components/PathsLegend'
 import { StatsPanel } from './components/StatsPanel'
 import { GraphExtractionControls } from './components/GraphExtractionControls'
+import { BedAnnotationPanel } from './components/BedAnnotationPanel'
 import { urlExamples } from './data/urlExamples'
 import { BandageLayoutWorker } from './utils/BandageLayoutWorker'
 import { parseGFA } from './utils/gfaParser'
@@ -17,6 +18,7 @@ import type {
   Graph,
   IndexedGraph,
   RegionPath,
+  BedAnnotation,
 } from './types'
 import './App.css'
 
@@ -93,6 +95,12 @@ function App({ worker }: AppProps) {
   const [regionStart, setRegionStart] = useState('')
   const [regionEnd, setRegionEnd] = useState('')
   const [isExtractingSubgraph, setIsExtractingSubgraph] = useState(false)
+  const [rightPanelView, setRightPanelView] = useState<
+    'graph' | 'annotations'
+  >('graph')
+  const [bedAnnotations, setBedAnnotations] = useState<BedAnnotation[]>([])
+  const [selectedBedAnnotation, setSelectedBedAnnotation] =
+    useState<BedAnnotation | null>(null)
   const backendUrl = useMemo(
     () => import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:8000',
     [],
@@ -249,6 +257,57 @@ function App({ worker }: AppProps) {
         const defaultEnd = Math.min(regionPath.start + 100000, regionPath.end)
         setRegionStart(String(regionPath.start))
         setRegionEnd(String(defaultEnd))
+      }
+    },
+    [regionPaths],
+  )
+
+  const handleBedAnnotationsChange = useCallback(
+    (annotations: BedAnnotation[]) => {
+      setBedAnnotations(annotations)
+      setSelectedBedAnnotation(null)
+    },
+    [],
+  )
+
+  const handleSelectBedAnnotation = useCallback(
+    (annotation: BedAnnotation, flankBp: number) => {
+      const normalizeName = (name: string) =>
+        name.trim().toLowerCase().replace(/^chr/, '')
+      const annotationChromosome = normalizeName(annotation.chromosome)
+      const matchingRegionPathIndex = regionPaths.findIndex(regionPath => {
+        const sequence = normalizeName(regionPath.sequence)
+        const label = normalizeName(regionPath.label)
+
+        return (
+          sequence === annotationChromosome ||
+          label === annotationChromosome ||
+          label.includes(annotation.chromosome.trim().toLowerCase())
+        )
+      })
+      const matchingRegionPath =
+        matchingRegionPathIndex >= 0
+          ? regionPaths[matchingRegionPathIndex]
+          : undefined
+      const flankedStart = Math.max(
+        matchingRegionPath?.start ?? 0,
+        annotation.start - flankBp,
+      )
+      const flankedEnd = matchingRegionPath
+        ? Math.min(matchingRegionPath.end, annotation.end + flankBp)
+        : annotation.end + flankBp
+
+      setSelectedBedAnnotation(annotation)
+      setRegionStart(String(flankedStart))
+      setRegionEnd(String(flankedEnd))
+
+      if (matchingRegionPathIndex >= 0) {
+        setSelectedRegionPathIndex(matchingRegionPathIndex)
+        setLoadError(null)
+      } else {
+        setLoadError(
+          `Selected annotation uses chromosome "${annotation.chromosome}", but no matching coordinate track was found for the selected graph.`,
+        )
       }
     },
     [regionPaths],
@@ -819,67 +878,101 @@ function App({ worker }: AppProps) {
         </div>
 
         <div className="right-panel">
-          <div className="visualization-section">
-            <h3>Graph Layout</h3>
-            {isComputing ? (
-              <div className="loading">
-                <div className="spinner"></div>
-                <p>Computing layout...</p>
-              </div>
-            ) : layoutResult ? (
-              <>
-                <GraphCanvas
-                  layoutResult={layoutResult}
-                  graph={currentGraph}
-                  width={1200}
-                  height={800}
-                  isDarkMode={isDarkMode}
-                  colorScheme={colorScheme}
-                  zoom={zoom}
-                  zoomRequestId={zoomRequestId}
-                  onInternalZoomChange={handleCanvasZoomChange}
-                  contigThickness={contigThickness}
-                  connectorThickness={connectorThickness}
-                  drawLabels={drawLabels}
-                  labelLengthThreshold={labelLengthThreshold}
-                  drawPaths={drawPaths}
-                  visiblePathIds={visiblePathNameSet}
-                />
-                {/* Keep path selection close to the rendered graph so long path
-                    names and search results are easier to scan. */}
-                {drawPaths &&
-                  currentGraph?.paths &&
-                  currentGraph.paths.length > 0 && (
-                    <PathsLegend
-                      paths={currentGraph.paths}
-                      isDarkMode={isDarkMode}
-                      selectedPathNames={visiblePathNames}
-                      onTogglePath={pathName =>
-                        setSelectedPathNames(currentSelected =>
-                          currentSelected.includes(pathName)
-                            ? currentSelected.filter(name => name !== pathName)
-                            : [...currentSelected, pathName],
-                        )
-                      }
-                      onSelectAll={() =>
-                        setSelectedPathNames(
-                          currentGraph.paths?.map(path => path.name) ?? [],
-                        )
-                      }
-                      onDeselectAll={() => setSelectedPathNames([])}
-                    />
-                  )}
-              </>
-            ) : currentGraph ? (
-              <div className="placeholder">
-                <p>Click "Redraw" to visualize the graph</p>
-              </div>
-            ) : (
-              <div className="placeholder">
-                <p>Load a GFA file from the File menu to get started</p>
-              </div>
-            )}
+          <div className="view-switch" role="tablist" aria-label="Main view">
+            <button
+              type="button"
+              className={rightPanelView === 'graph' ? 'active' : undefined}
+              onClick={() => setRightPanelView('graph')}
+              role="tab"
+              aria-selected={rightPanelView === 'graph'}
+            >
+              Graph Layout
+            </button>
+            <button
+              type="button"
+              className={
+                rightPanelView === 'annotations' ? 'active' : undefined
+              }
+              onClick={() => setRightPanelView('annotations')}
+              role="tab"
+              aria-selected={rightPanelView === 'annotations'}
+            >
+              Annotations
+            </button>
           </div>
+
+          {rightPanelView === 'annotations' ? (
+            <div className="visualization-section">
+              <BedAnnotationPanel
+                annotations={bedAnnotations}
+                selectedAnnotation={selectedBedAnnotation}
+                onAnnotationsChange={handleBedAnnotationsChange}
+                onSelectAnnotation={handleSelectBedAnnotation}
+              />
+            </div>
+          ) : (
+            <div className="visualization-section">
+              <h3>Graph Layout</h3>
+              {isComputing ? (
+                <div className="loading">
+                  <div className="spinner"></div>
+                  <p>Computing layout...</p>
+                </div>
+              ) : layoutResult ? (
+                <>
+                  <GraphCanvas
+                    layoutResult={layoutResult}
+                    graph={currentGraph}
+                    width={1200}
+                    height={800}
+                    isDarkMode={isDarkMode}
+                    colorScheme={colorScheme}
+                    zoom={zoom}
+                    zoomRequestId={zoomRequestId}
+                    onInternalZoomChange={handleCanvasZoomChange}
+                    contigThickness={contigThickness}
+                    connectorThickness={connectorThickness}
+                    drawLabels={drawLabels}
+                    labelLengthThreshold={labelLengthThreshold}
+                    drawPaths={drawPaths}
+                    visiblePathIds={visiblePathNameSet}
+                  />
+                  {/* Keep path selection close to the rendered graph so long path
+                    names and search results are easier to scan. */}
+                  {drawPaths &&
+                    currentGraph?.paths &&
+                    currentGraph.paths.length > 0 && (
+                      <PathsLegend
+                        paths={currentGraph.paths}
+                        isDarkMode={isDarkMode}
+                        selectedPathNames={visiblePathNames}
+                        onTogglePath={pathName =>
+                          setSelectedPathNames(currentSelected =>
+                            currentSelected.includes(pathName)
+                              ? currentSelected.filter(name => name !== pathName)
+                              : [...currentSelected, pathName],
+                          )
+                        }
+                        onSelectAll={() =>
+                          setSelectedPathNames(
+                            currentGraph.paths?.map(path => path.name) ?? [],
+                          )
+                        }
+                        onDeselectAll={() => setSelectedPathNames([])}
+                      />
+                    )}
+                </>
+              ) : currentGraph ? (
+                <div className="placeholder">
+                  <p>Click "Redraw" to visualize the graph</p>
+                </div>
+              ) : (
+                <div className="placeholder">
+                  <p>Load a GFA file from the File menu to get started</p>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </main>
 

@@ -324,6 +324,55 @@ body:has(.app.dark-mode) {
   gap: 20px;
 }
 
+.view-switch {
+  display: inline-flex;
+  align-self: flex-start;
+  border: 1px solid #ddd;
+  background: white;
+}
+
+.view-switch button {
+  padding: 8px 14px;
+  border: none;
+  border-right: 1px solid #ddd;
+  background: transparent;
+  color: #333;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.view-switch button:last-child {
+  border-right: none;
+}
+
+.view-switch button.active {
+  background: #0066cc;
+  color: white;
+}
+
+.view-switch button:hover:not(.active) {
+  background: #f0f0f0;
+}
+
+.app.dark-mode .view-switch {
+  background: #2a2a2a;
+  border-color: #444;
+}
+
+.app.dark-mode .view-switch button {
+  border-right-color: #444;
+  color: #e0e0e0;
+}
+
+.app.dark-mode .view-switch button.active {
+  background: #1d6fb8;
+  color: white;
+}
+
+.app.dark-mode .view-switch button:hover:not(.active) {
+  background: #404040;
+}
+
 /* Panels */
 .layout-controls,
 .stats-panel,
@@ -515,6 +564,169 @@ body:has(.app.dark-mode) {
 
 .app.dark-mode .control-hint {
   color: #aaa;
+}
+
+.secondary-button {
+  padding: 8px 12px;
+  border: 1px solid #ccc;
+  background: #f9f9f9;
+  color: #333;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.secondary-button:hover {
+  background: #f0f0f0;
+}
+
+.secondary-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.app.dark-mode .secondary-button {
+  border-color: #555;
+  background: #333;
+  color: #e0e0e0;
+}
+
+.app.dark-mode .secondary-button:hover {
+  background: #404040;
+}
+
+.hidden-file-input {
+  display: none;
+}
+
+.annotation-panel {
+  min-height: 800px;
+}
+
+.annotation-toolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 15px;
+  margin-bottom: 14px;
+}
+
+.annotation-toolbar h3 {
+  margin: 0 0 4px 0;
+  font-size: 16px;
+}
+
+.annotation-summary,
+.annotation-selection {
+  font-size: 13px;
+  color: #666;
+}
+
+.app.dark-mode .annotation-summary,
+.app.dark-mode .annotation-selection {
+  color: #aaa;
+}
+
+.annotation-search-row {
+  margin: 12px 0;
+}
+
+.annotation-config-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) 95px 95px 120px auto;
+  gap: 12px;
+  align-items: start;
+  margin: 12px 0;
+}
+
+.annotation-config-grid .control-group {
+  margin-bottom: 0;
+}
+
+.annotation-apply-button {
+  align-self: end;
+  margin-bottom: 20px;
+  white-space: nowrap;
+}
+
+.annotation-selection {
+  margin-bottom: 10px;
+}
+
+.annotation-table-wrap {
+  max-height: 720px;
+  overflow: auto;
+  border: 1px solid #ddd;
+}
+
+.app.dark-mode .annotation-table-wrap {
+  border-color: #444;
+}
+
+.annotation-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.annotation-table th,
+.annotation-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid #eee;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.annotation-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f9f9f9;
+  font-weight: 600;
+}
+
+.annotation-table tr.selected td {
+  background: #eaf4ff;
+}
+
+.app.dark-mode .annotation-table th,
+.app.dark-mode .annotation-table td {
+  border-bottom-color: #444;
+}
+
+.app.dark-mode .annotation-table th {
+  background: #333;
+}
+
+.app.dark-mode .annotation-table tr.selected td {
+  background: #1a3a5a;
+}
+
+.table-action-button {
+  padding: 4px 8px;
+  border: 1px solid #ccc;
+  background: white;
+  color: #333;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.table-action-button:hover {
+  background: #f0f0f0;
+}
+
+.app.dark-mode .table-action-button {
+  border-color: #555;
+  background: #2a2a2a;
+  color: #e0e0e0;
+}
+
+.app.dark-mode .table-action-button:hover {
+  background: #404040;
+}
+
+.annotation-placeholder {
+  height: 720px;
+  border: none;
 }
 
 input[type='range'] {
@@ -807,6 +1019,15 @@ canvas {
 @media (max-width: 1024px) {
   .app-main {
     grid-template-columns: 1fr;
+  }
+
+  .annotation-config-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .annotation-apply-button {
+    align-self: stretch;
+    margin-bottom: 0;
   }
 
   .stats-grid {

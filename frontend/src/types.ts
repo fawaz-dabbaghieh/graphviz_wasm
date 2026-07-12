@@ -51,6 +51,21 @@ export interface RegionPath {
   label: string
 }
 
+export interface BedAnnotation {
+  id: string
+  chromosome: string
+  start: number
+  end: number
+  lineNumber: number
+  columns: BedAnnotationColumn[]
+}
+
+export interface BedAnnotationColumn {
+  index: number
+  header: string
+  value: string
+}
+
 export interface LayoutOptions {
   quality: number
   linearLayout: boolean
