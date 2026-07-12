@@ -8,6 +8,7 @@
 
 using namespace emscripten;
 
+
 // Helper to create graph from JavaScript object
 AssemblyGraph* createGraphFromJS(const val& jsGraph) {
     auto* graph = new AssemblyGraph();
