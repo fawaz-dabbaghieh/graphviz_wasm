@@ -34,6 +34,23 @@ export interface Graph {
   paths?: GraphPath[] // Optional paths/walks embedded in the source GFA
 }
 
+export interface IndexedGraph {
+  id: string
+  name: string
+  description: string
+}
+
+export interface RegionPath {
+  source: string
+  reference: string
+  haplotype: string
+  sequence: string
+  start: number
+  end: number
+  entries: number
+  label: string
+}
+
 export interface LayoutOptions {
   quality: number
   linearLayout: boolean
@@ -92,4 +109,4 @@ export interface DetailsDialog {
   nodeId: string | null
 }
 
-export type ColorScheme = 'uniform' | 'random' | 'depth' | 'gc-content' | 'grey'
+export type ColorScheme = 'uniform' | 'random' | 'depth' | 'grey'

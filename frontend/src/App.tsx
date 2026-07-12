@@ -4,16 +4,40 @@ import { LengthDistribution } from './components/LengthDistribution'
 import { LayoutControls } from './components/LayoutControls'
 import { PathsLegend } from './components/PathsLegend'
 import { StatsPanel } from './components/StatsPanel'
+import { GraphExtractionControls } from './components/GraphExtractionControls'
 import { urlExamples } from './data/urlExamples'
 import { BandageLayoutWorker } from './utils/BandageLayoutWorker'
 import { parseGFA } from './utils/gfaParser'
 import { convertGFAToGraph } from './utils/gfaConverter'
 import { clampZoom } from './utils/zoom'
-import type { LayoutOptions, LayoutResult, ColorScheme, Graph } from './types'
+import type {
+  LayoutOptions,
+  LayoutResult,
+  ColorScheme,
+  Graph,
+  IndexedGraph,
+  RegionPath,
+} from './types'
 import './App.css'
 
 interface AppProps {
   worker: BandageLayoutWorker
+}
+
+async function readBackendError(response: Response): Promise<string> {
+  const contentType = response.headers.get('content-type') ?? ''
+
+  if (contentType.includes('application/json')) {
+    const errorBody = (await response.json()) as { detail?: unknown }
+
+    // FastAPI returns either a string detail from our HTTPException or a
+    // validation array from Pydantic. Flatten both into readable UI text.
+    return typeof errorBody.detail === 'string'
+      ? errorBody.detail
+      : JSON.stringify(errorBody.detail)
+  }
+
+  return response.text()
 }
 
 function App({ worker }: AppProps) {
@@ -44,17 +68,35 @@ function App({ worker }: AppProps) {
     const saved = localStorage.getItem('darkMode')
     return saved !== null ? JSON.parse(saved) : true
   })
-  const [colorScheme, setColorScheme] = useState<ColorScheme>('random')
-  const [zoom, setZoom] = useState<number>(1) // Controls zoom (from slider)
-  const [displayZoom, setDisplayZoom] = useState<number>(1) // Shows current zoom (from canvas)
+  const [colorScheme, setColorScheme] = useState<ColorScheme>('uniform')
+  const [zoom, setZoom] = useState<number>(1)
+  const [zoomRequestId, setZoomRequestId] = useState(0)
+  const [displayZoom, setDisplayZoom] = useState<number>(1)
   const [contigThickness, setContigThickness] = useState<number>(6)
   const [connectorThickness, setConnectorThickness] = useState<number>(3)
-  const [drawLabels, setDrawLabels] = useState<boolean>(true)
+  const [drawLabels, setDrawLabels] = useState<boolean>(false)
   const [labelLengthThreshold, setLabelLengthThreshold] = useState<number>(0)
   const [drawPaths, setDrawPaths] = useState<boolean>(false)
   // Keep path visibility in the React layer so toggling paths never requires
   // recomputing the layout itself.
   const [selectedPathNames, setSelectedPathNames] = useState<string[]>([])
+  const [indexedGraphs, setIndexedGraphs] = useState<IndexedGraph[]>([])
+  const [selectedIndexedGraph, setSelectedIndexedGraph] = useState('')
+  const [isLoadingIndexedGraphs, setIsLoadingIndexedGraphs] = useState(false)
+  const [indexedGraphError, setIndexedGraphError] = useState<string | null>(null)
+  const [regionPaths, setRegionPaths] = useState<RegionPath[]>([])
+  const [selectedRegionPathIndex, setSelectedRegionPathIndex] = useState(0)
+  const [isLoadingRegionPaths, setIsLoadingRegionPaths] = useState(false)
+  const [regionPathError, setRegionPathError] = useState<string | null>(null)
+  const [subgraphStartNode, setSubgraphStartNode] = useState('')
+  const [extractionMaxNodes, setExtractionMaxNodes] = useState('200')
+  const [regionStart, setRegionStart] = useState('')
+  const [regionEnd, setRegionEnd] = useState('')
+  const [isExtractingSubgraph, setIsExtractingSubgraph] = useState(false)
+  const backendUrl = useMemo(
+    () => import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:8000',
+    [],
+  )
 
   // Drop any stale selections from a previous graph load and preserve the
   // current graph's path ordering for the selector.
@@ -70,6 +112,148 @@ function App({ worker }: AppProps) {
     [visiblePathNames],
   )
 
+  const handleControlZoomChange = useCallback((nextZoom: number) => {
+    const clampedZoom = clampZoom(nextZoom)
+    setZoom(clampedZoom)
+    setZoomRequestId(currentId => currentId + 1)
+    setDisplayZoom(clampedZoom)
+  }, [])
+
+  const handleCanvasZoomChange = useCallback((nextZoom: number) => {
+    setDisplayZoom(clampZoom(nextZoom))
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+
+    const loadIndexedGraphs = async () => {
+      try {
+        setIsLoadingIndexedGraphs(true)
+        setIndexedGraphError(null)
+
+        const response = await fetch(`${backendUrl}/api/graphs`)
+        if (!response.ok) {
+          const errorText = await readBackendError(response)
+          throw new Error(errorText || `Backend returned HTTP ${response.status}`)
+        }
+
+        const graphs = (await response.json()) as IndexedGraph[]
+        if (cancelled) return
+
+        setIndexedGraphs(graphs)
+        setSelectedIndexedGraph(currentGraphId => {
+          if (graphs.some(graph => graph.id === currentGraphId)) {
+            return currentGraphId
+          }
+
+          return graphs[0]?.id ?? ''
+        })
+      } catch (error) {
+        if (cancelled) return
+
+        const message =
+          error instanceof Error ? error.message : 'Failed to load graph list'
+        setIndexedGraphError(message)
+        setIndexedGraphs([])
+        setSelectedIndexedGraph('')
+      } finally {
+        if (!cancelled) {
+          setIsLoadingIndexedGraphs(false)
+        }
+      }
+    }
+
+    loadIndexedGraphs()
+
+    return () => {
+      cancelled = true
+    }
+  }, [backendUrl])
+
+  useEffect(() => {
+    let cancelled = false
+
+    const loadRegionPaths = async () => {
+      if (!selectedIndexedGraph) {
+        setRegionPaths([])
+        setSelectedRegionPathIndex(0)
+        setRegionStart('')
+        setRegionEnd('')
+        return
+      }
+
+      try {
+        setIsLoadingRegionPaths(true)
+        setRegionPathError(null)
+        setRegionPaths([])
+        setSelectedRegionPathIndex(0)
+        setRegionStart('')
+        setRegionEnd('')
+
+        const response = await fetch(
+          `${backendUrl}/api/graphs/${encodeURIComponent(
+            selectedIndexedGraph,
+          )}/region-paths`,
+        )
+        if (!response.ok) {
+          const errorText = await readBackendError(response)
+          throw new Error(errorText || `Backend returned HTTP ${response.status}`)
+        }
+
+        const paths = (await response.json()) as RegionPath[]
+        if (cancelled) return
+
+        setRegionPaths(paths)
+        setSelectedRegionPathIndex(0)
+        const firstPath = paths[0]
+        if (firstPath) {
+          const defaultEnd = Math.min(firstPath.start + 100000, firstPath.end)
+          setRegionStart(String(firstPath.start))
+          setRegionEnd(String(defaultEnd))
+        } else {
+          setRegionStart('')
+          setRegionEnd('')
+        }
+      } catch (error) {
+        if (cancelled) return
+
+        const message =
+          error instanceof Error
+            ? error.message
+            : 'Failed to load coordinate tracks'
+        setRegionPathError(message)
+        setRegionPaths([])
+        setSelectedRegionPathIndex(0)
+        setRegionStart('')
+        setRegionEnd('')
+      } finally {
+        if (!cancelled) {
+          setIsLoadingRegionPaths(false)
+        }
+      }
+    }
+
+    loadRegionPaths()
+
+    return () => {
+      cancelled = true
+    }
+  }, [backendUrl, selectedIndexedGraph])
+
+  const handleSelectedRegionPathChange = useCallback(
+    (index: number) => {
+      const regionPath = regionPaths[index]
+      setSelectedRegionPathIndex(index)
+
+      if (regionPath) {
+        const defaultEnd = Math.min(regionPath.start + 100000, regionPath.end)
+        setRegionStart(String(regionPath.start))
+        setRegionEnd(String(defaultEnd))
+      }
+    },
+    [regionPaths],
+  )
+
   // Handle loading GFA from text
   const loadGFAFromText = useCallback((text: string, filename: string) => {
     try {
@@ -80,6 +264,8 @@ function App({ worker }: AppProps) {
       const graph = convertGFAToGraph(gfaGraph, filename)
 
       setCurrentGraph(graph)
+      setColorScheme('uniform')
+      setDrawLabels(false)
       setFileMenuOpen(false)
       setExamplesMenuOpen(false)
     } catch (error) {
@@ -119,6 +305,157 @@ function App({ worker }: AppProps) {
       setLoadingFile(false)
     }
   }, [urlInput, loadGFAFromText])
+
+  // Ask the backend to run gfaidx against a whitelisted indexed graph, then feed
+  // the returned GFA text through the same parser used for uploaded files.
+  const handleExtractSubgraph = useCallback(async () => {
+    const startNode = subgraphStartNode.trim()
+    const maxNodes = Number(extractionMaxNodes)
+
+    if (!selectedIndexedGraph) {
+      setLoadError('Choose an indexed graph before extracting a subgraph')
+      return
+    }
+
+    if (!startNode) {
+      setLoadError('Enter a start node ID before extracting a subgraph')
+      return
+    }
+
+    if (!Number.isInteger(maxNodes) || maxNodes < 1) {
+      setLoadError('Neighborhood size must be a positive integer')
+      return
+    }
+
+    try {
+      setIsExtractingSubgraph(true)
+      setLoadError(null)
+
+      const response = await fetch(`${backendUrl}/api/extract-subgraph`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          graph_id: selectedIndexedGraph,
+          start_node: startNode,
+          max_nodes: maxNodes,
+        }),
+      })
+
+      if (!response.ok) {
+        const errorText = await readBackendError(response)
+        throw new Error(errorText || `Backend returned HTTP ${response.status}`)
+      }
+
+      const gfaText = await response.text()
+      loadGFAFromText(
+        gfaText,
+        `${selectedIndexedGraph}_${startNode}_${maxNodes}_nodes.gfa`,
+      )
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Failed to extract subgraph'
+      setLoadError(message)
+    } finally {
+      setIsExtractingSubgraph(false)
+    }
+  }, [
+    backendUrl,
+    extractionMaxNodes,
+    loadGFAFromText,
+    selectedIndexedGraph,
+    subgraphStartNode,
+  ])
+
+  const handleExtractRegion = useCallback(async () => {
+    const selectedRegionPath = regionPaths[selectedRegionPathIndex]
+    const start = Number(regionStart)
+    const end = Number(regionEnd)
+    const maxNodes = Number(extractionMaxNodes)
+
+    if (!selectedIndexedGraph) {
+      setLoadError('Choose an indexed graph before extracting a region')
+      return
+    }
+
+    if (!selectedRegionPath) {
+      setLoadError('Choose a coordinate track before extracting a region')
+      return
+    }
+
+    if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0) {
+      setLoadError('Region start and end must be non-negative integers')
+      return
+    }
+
+    if (end <= start) {
+      setLoadError('Region end must be greater than start')
+      return
+    }
+
+    if (
+      start < selectedRegionPath.start ||
+      end > selectedRegionPath.end
+    ) {
+      setLoadError('Region must stay within the selected coordinate track bounds')
+      return
+    }
+
+    if (!Number.isInteger(maxNodes) || maxNodes < 1) {
+      setLoadError('Neighborhood size must be a positive integer')
+      return
+    }
+
+    try {
+      setIsExtractingSubgraph(true)
+      setLoadError(null)
+
+      const response = await fetch(`${backendUrl}/api/extract-region`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          graph_id: selectedIndexedGraph,
+          reference: selectedRegionPath.reference,
+          sequence: selectedRegionPath.sequence,
+          start,
+          end,
+          max_nodes: maxNodes,
+        }),
+      })
+
+      if (!response.ok) {
+        const errorText = await readBackendError(response)
+        throw new Error(errorText || `Backend returned HTTP ${response.status}`)
+      }
+
+      const gfaText = await response.text()
+      const referencePrefix = selectedRegionPath.reference
+        ? `${selectedRegionPath.reference}_`
+        : ''
+      loadGFAFromText(
+        gfaText,
+        `${selectedIndexedGraph}_${referencePrefix}${selectedRegionPath.sequence}_${start}_${end}.gfa`,
+      )
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Failed to extract region'
+      setLoadError(message)
+    } finally {
+      setIsExtractingSubgraph(false)
+    }
+  }, [
+    backendUrl,
+    extractionMaxNodes,
+    loadGFAFromText,
+    regionEnd,
+    regionPaths,
+    regionStart,
+    selectedIndexedGraph,
+    selectedRegionPathIndex,
+  ])
 
   // Handle loading from predefined URL example
   const handleLoadURLExample = useCallback(
@@ -175,18 +512,6 @@ function App({ worker }: AppProps) {
     [loadGFAFromText],
   )
 
-  // Load MT.gfa by default on first load
-  useEffect(() => {
-    if (!currentGraph) {
-      const mtExample = urlExamples.find(
-        ex => ex.name === 'MT GFA-spec example',
-      )
-      if (mtExample) {
-        handleLoadURLExample(mtExample.url, mtExample.name)
-      }
-    }
-  }, [currentGraph, handleLoadURLExample])
-
   useEffect(() => {
     if (!currentGraph?.paths) {
       setSelectedPathNames([])
@@ -227,7 +552,10 @@ function App({ worker }: AppProps) {
 
   // Auto-compute on graph change (but not on layout options change)
   useEffect(() => {
-    if (!worker) return
+    if (!worker || !currentGraph) {
+      setIsComputing(false)
+      return
+    }
 
     // Increment request ID for this new computation
     const currentRequestId = ++requestIdRef.current
@@ -235,8 +563,6 @@ function App({ worker }: AppProps) {
     const runLayout = async () => {
       setIsComputing(true)
       try {
-        if (!currentGraph) return
-
         const { result, duration } = await worker.computeLayout(
           currentGraph,
           layoutOptions,
@@ -431,8 +757,42 @@ function App({ worker }: AppProps) {
         </div>
       </header>
 
+      {/* Surface file/backend load failures outside modal dialogs. Without this
+          banner, extraction errors are stored but easy for users to miss. */}
+      {loadError && !urlDialogOpen && (
+        <div className="load-error-banner" role="alert">
+          <pre>{loadError}</pre>
+          <button type="button" onClick={() => setLoadError(null)}>
+            Dismiss
+          </button>
+        </div>
+      )}
+
       <main className="app-main">
         <div className="left-panel">
+          <GraphExtractionControls
+            graphs={indexedGraphs}
+            selectedGraphId={selectedIndexedGraph}
+            onSelectedGraphIdChange={setSelectedIndexedGraph}
+            graphListError={indexedGraphError}
+            isLoadingGraphs={isLoadingIndexedGraphs}
+            maxNodes={extractionMaxNodes}
+            onMaxNodesChange={setExtractionMaxNodes}
+            nodeStart={subgraphStartNode}
+            onNodeStartChange={setSubgraphStartNode}
+            onExtractNode={handleExtractSubgraph}
+            regionPaths={regionPaths}
+            selectedRegionPathIndex={selectedRegionPathIndex}
+            onSelectedRegionPathIndexChange={handleSelectedRegionPathChange}
+            regionPathError={regionPathError}
+            isLoadingRegionPaths={isLoadingRegionPaths}
+            regionStart={regionStart}
+            onRegionStartChange={setRegionStart}
+            regionEnd={regionEnd}
+            onRegionEndChange={setRegionEnd}
+            onExtractRegion={handleExtractRegion}
+            isExtracting={isExtractingSubgraph}
+          />
           <LayoutControls
             options={layoutOptions}
             onChange={setLayoutOptions}
@@ -441,7 +801,7 @@ function App({ worker }: AppProps) {
             colorScheme={colorScheme}
             onColorSchemeChange={setColorScheme}
             zoom={displayZoom}
-            onZoomChange={z => setZoom(clampZoom(z))}
+            onZoomChange={handleControlZoomChange}
             contigThickness={contigThickness}
             onContigThicknessChange={setContigThickness}
             connectorThickness={connectorThickness}
@@ -476,8 +836,8 @@ function App({ worker }: AppProps) {
                   isDarkMode={isDarkMode}
                   colorScheme={colorScheme}
                   zoom={zoom}
-                  onZoomChange={z => setZoom(clampZoom(z))}
-                  onInternalZoomChange={setDisplayZoom}
+                  zoomRequestId={zoomRequestId}
+                  onInternalZoomChange={handleCanvasZoomChange}
                   contigThickness={contigThickness}
                   connectorThickness={connectorThickness}
                   drawLabels={drawLabels}

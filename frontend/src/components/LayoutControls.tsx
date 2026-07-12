@@ -1,6 +1,15 @@
 import { useState } from 'react'
 import type { LayoutOptions, ColorScheme } from '../types'
-import { MIN_ZOOM, MAX_ZOOM, formatZoomPercent } from '../utils/zoom'
+import {
+  MIN_ZOOM,
+  MAX_ZOOM,
+  ZOOM_SLIDER_MIN,
+  ZOOM_SLIDER_MAX,
+  ZOOM_SLIDER_STEP,
+  formatZoomPercent,
+  sliderValueToZoom,
+  zoomToSliderValue,
+} from '../utils/zoom'
 
 interface LayoutControlsProps {
   options: LayoutOptions
@@ -81,7 +90,6 @@ export function LayoutControls({
                 <option value="uniform">Uniform Color</option>
                 <option value="random">Rainbow</option>
                 <option value="depth">Color by Depth</option>
-                <option value="gc-content">Color by Length (GC proxy)</option>
                 <option value="grey">Grey</option>
               </select>
             </div>
@@ -93,11 +101,13 @@ export function LayoutControls({
               </label>
               <input
                 type="range"
-                min={MIN_ZOOM}
-                max={MAX_ZOOM}
-                step="0.01"
-                value={zoom}
-                onChange={e => onZoomChange(parseFloat(e.target.value))}
+                min={ZOOM_SLIDER_MIN}
+                max={ZOOM_SLIDER_MAX}
+                step={ZOOM_SLIDER_STEP}
+                value={zoomToSliderValue(zoom)}
+                onChange={e =>
+                  onZoomChange(sliderValueToZoom(parseFloat(e.target.value)))
+                }
                 disabled={isComputing}
               />
               <div className="control-hint">
@@ -240,9 +250,9 @@ export function LayoutControls({
               </label>
               <input
                 type="range"
-                min="1"
-                max="100000"
-                step="100"
+                min="0.5"
+                max="20"
+                step="0.5"
                 value={options.edgeLength}
                 onChange={e =>
                   onChange({

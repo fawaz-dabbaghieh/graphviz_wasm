@@ -1,6 +1,12 @@
 # Bandage Layout JS
 
 WebAssembly port of Bandage graph layout engine for JavaScript/TypeScript.
+This was originally forked from https://github.com/cmdcolin/BandageJS.
+What has been/being added:
+* The way paths and edges are interpreted, originally if the edges was written in both direction, then the nodes were being duplicated, not anymore
+* Adding support for indexed graphs with gfaidx, which allows the user to jump around in huge graphs and visualize smaller parts of the graph instantly
+* Including backend API for gfaidx
+
 
 ## Overview
 
@@ -16,13 +22,86 @@ This is a high-performance WebAssembly compilation of the Bandage graph layout a
 ## Architecture
 
 ```
-├── src/           # C++ source files (Qt-free port)
-├── include/       # C++ headers
-├── build/         # Emscripten build output
-├── js/            # JavaScript/TypeScript wrapper and Web Worker
-├── examples/      # Usage examples
-└── tests/         # Test files
+├── frontend/      # React/Vite web visualizer
+├── backend/       # FastAPI service for server-side graph requests
+├── src/           # C++ source files for the WASM layout engine
+├── include/       # C++ headers for the WASM layout engine
+├── js/            # Built JavaScript/WASM wrapper used by the frontend
+└── examples/      # Usage examples for the layout package
 ```
+
+## Local Development
+
+The app currently runs as two local services:
+
+- The frontend is the React/Vite visualizer.
+- The backend is a FastAPI API that runs controlled server-side `gfaidx`
+  extraction commands.
+
+For the current backend integration, the browser calls `GET /api/graphs` to
+load the server-side graph registry, then calls `POST /api/extract-subgraph` or
+`POST /api/extract-region`. The backend runs controlled `gfaidx` commands
+against registered indexed graphs and returns the extracted GFA to the
+visualizer.
+
+### Required Packages
+
+Inside your Conda environment, install Python and Node tooling:
+
+```bash
+conda activate bandagejs
+conda install -c conda-forge python nodejs fastapi uvicorn
+```
+
+Alternatively, if Python and Node are already installed in the environment, only
+install the backend Python dependencies:
+
+```bash
+pip install -r backend/requirements.txt
+```
+
+Then install the frontend JavaScript dependencies:
+
+```bash
+cd frontend
+npm install
+```
+
+### Start The Backend
+
+From the repository root:
+
+```bash
+conda activate bandagejs
+python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000 --reload
+```
+
+The backend API will be available at:
+
+```text
+http://127.0.0.1:8000
+```
+
+### Start The Frontend
+
+In a second terminal:
+
+```bash
+conda activate bandagejs
+cd frontend
+npm run dev
+```
+
+Open the Vite URL shown in the terminal, usually:
+
+```text
+http://localhost:5173
+```
+
+Use the graph selection panel in the left sidebar to extract either a
+node-neighborhood subgraph or a coordinate-region subgraph from the backend. The
+backend currently ships with a `chr22` registry entry and refuses requests above
+10000 nodes.
 
 ## Dependencies Analysis
 

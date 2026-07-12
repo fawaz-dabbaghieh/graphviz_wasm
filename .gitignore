@@ -6,6 +6,10 @@ yarn-debug.log*
 yarn-error.log*
 lerna-debug.log*
 
+# Python backend caches
+__pycache__/
+*.py[cod]
+
 build/
 indexed_example/
 
