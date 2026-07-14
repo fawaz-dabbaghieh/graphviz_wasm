@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from 'react'
-import type { BedAnnotation } from '../types'
+import type { BedAnnotation, IndexedAnnotation } from '../types'
 import { parseBedAnnotations } from '../utils/bedAnnotations'
 
 interface BedAnnotationPanelProps {
@@ -7,6 +7,13 @@ interface BedAnnotationPanelProps {
   selectedAnnotation: BedAnnotation | null
   onAnnotationsChange: (annotations: BedAnnotation[]) => void
   onSelectAnnotation: (annotation: BedAnnotation, flankBp: number) => void
+  indexedAnnotations: IndexedAnnotation[]
+  indexedAnnotationError: string | null
+  isLoadingIndexedAnnotations: boolean
+  isLoadingAnnotationFile: boolean
+  onLoadIndexedAnnotation: (
+    annotationId: string,
+  ) => Promise<{ text: string; filename: string }>
 }
 
 function annotationKey(annotation: BedAnnotation): string {
@@ -18,11 +25,18 @@ export function BedAnnotationPanel({
   selectedAnnotation,
   onAnnotationsChange,
   onSelectAnnotation,
+  indexedAnnotations,
+  indexedAnnotationError,
+  isLoadingIndexedAnnotations,
+  isLoadingAnnotationFile,
+  onLoadIndexedAnnotation,
 }: BedAnnotationPanelProps) {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [query, setQuery] = useState('')
   const [filename, setFilename] = useState('')
   const [fileText, setFileText] = useState('')
+  const [selectedIndexedAnnotationId, setSelectedIndexedAnnotationId] =
+    useState('')
   const [columnSelection, setColumnSelection] = useState('1,2,3,4')
   const [startColumn, setStartColumn] = useState('')
   const [endColumn, setEndColumn] = useState('')
@@ -76,6 +90,25 @@ export function BedAnnotationPanel({
         error instanceof Error
           ? error.message
           : 'Failed to parse annotation file',
+      )
+      onAnnotationsChange([])
+    }
+  }
+
+  const handleLoadServerAnnotation = async () => {
+    if (!selectedIndexedAnnotationId) return
+
+    try {
+      const { text, filename: nextFilename } = await onLoadIndexedAnnotation(
+        selectedIndexedAnnotationId,
+      )
+      setFileText(text)
+      parseLoadedFile(text, nextFilename)
+    } catch (error) {
+      setParseError(
+        error instanceof Error
+          ? error.message
+          : 'Failed to load annotation file',
       )
       onAnnotationsChange([])
     }
@@ -156,6 +189,50 @@ export function BedAnnotationPanel({
       />
 
       {parseError && <div className="control-error">{parseError}</div>}
+
+      <div className="annotation-source-row">
+        <div className="control-group">
+          <label htmlFor="indexed-annotation-select">
+            <strong>Available BED</strong>
+          </label>
+          <select
+            id="indexed-annotation-select"
+            className="control-select"
+            value={selectedIndexedAnnotationId}
+            onChange={event =>
+              setSelectedIndexedAnnotationId(event.currentTarget.value)
+            }
+            disabled={
+              isLoadingIndexedAnnotations ||
+              isLoadingAnnotationFile ||
+              indexedAnnotations.length === 0
+            }
+          >
+            <option value="">
+              {isLoadingIndexedAnnotations
+                ? 'Loading BED files...'
+                : 'Choose a server BED file'}
+            </option>
+            {indexedAnnotations.map(annotation => (
+              <option key={annotation.id} value={annotation.id}>
+                {annotation.name}
+              </option>
+            ))}
+          </select>
+          {indexedAnnotationError && (
+            <div className="control-error">{indexedAnnotationError}</div>
+          )}
+        </div>
+
+        <button
+          className="secondary-button annotation-source-button"
+          type="button"
+          onClick={handleLoadServerAnnotation}
+          disabled={!selectedIndexedAnnotationId || isLoadingAnnotationFile}
+        >
+          {isLoadingAnnotationFile ? 'Loading...' : 'Load Selected BED'}
+        </button>
+      </div>
 
       <div className="annotation-config-grid">
         <div className="control-group">

@@ -1,6 +1,8 @@
 import csv
 from dataclasses import dataclass
+import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 
@@ -21,6 +23,14 @@ app.add_middleware(
         "http://localhost:5173",
         "http://127.0.0.1:5173",
     ],
+    allow_origin_regex=(
+        r"^http://("
+        r"localhost|127\.0\.0\.1|"
+        r"10\.\d+\.\d+\.\d+|"
+        r"192\.168\.\d+\.\d+|"
+        r"172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+"
+        r"):\d+$"
+    ),
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
@@ -28,8 +38,14 @@ app.add_middleware(
 # Keep all executable and graph paths server-controlled. The browser can choose
 # from graph IDs, but it never gets to provide filesystem paths or shell text.
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-GFAIDX_BINARY = BACKEND_ROOT / "gfaidx_bin" / "gfaidx"
+GFAIDX_BINARY = Path(
+    os.environ.get(
+        "GFAIDX_BINARY",
+        shutil.which("gfaidx") or str(BACKEND_ROOT / "gfaidx_bin" / "gfaidx"),
+    )
+)
 GRAPH_REGISTRY_PATH = BACKEND_ROOT / "graphs.tsv"
+ANNOTATION_REGISTRY_PATH = BACKEND_ROOT / "annotations.tsv"
 GFAIDX_EXTRACTION_TIMEOUT_SECONDS = 300
 
 
@@ -41,7 +57,21 @@ class GraphRegistryEntry:
     description: str = ""
 
 
+@dataclass(frozen=True)
+class AnnotationRegistryEntry:
+    annotation_id: str
+    display_name: str
+    path: Path
+    description: str = ""
+
+
 class GraphInfo(BaseModel):
+    id: str
+    name: str
+    description: str = ""
+
+
+class AnnotationInfo(BaseModel):
     id: str
     name: str
     description: str = ""
@@ -138,6 +168,65 @@ def get_graph_entry(graph_id: str) -> GraphRegistryEntry:
     return graph_entry
 
 
+def load_annotation_registry() -> dict[str, AnnotationRegistryEntry]:
+    if not ANNOTATION_REGISTRY_PATH.exists():
+        raise HTTPException(status_code=500, detail="Annotation registry was not found")
+
+    annotation_entries: dict[str, AnnotationRegistryEntry] = {}
+    with ANNOTATION_REGISTRY_PATH.open(newline="", encoding="utf-8") as registry_file:
+        reader = csv.DictReader(registry_file, delimiter="\t")
+        required_columns = {"annotation_id", "display_name", "path"}
+        fieldnames = set(reader.fieldnames or [])
+        missing_columns = sorted(required_columns - fieldnames)
+        if missing_columns:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Annotation registry is missing columns: {', '.join(missing_columns)}",
+            )
+
+        for line_number, row in enumerate(reader, start=2):
+            annotation_id = (row.get("annotation_id") or "").strip()
+            display_name = (row.get("display_name") or "").strip()
+            raw_path = (row.get("path") or "").strip()
+            description = (row.get("description") or "").strip()
+
+            if not annotation_id or not display_name or not raw_path:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Annotation registry has an incomplete row at line {line_number}",
+                )
+
+            annotation_path = Path(raw_path)
+            if not annotation_path.is_absolute():
+                annotation_path = BACKEND_ROOT / annotation_path
+
+            if annotation_id in annotation_entries:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Annotation registry contains duplicate annotation ID: {annotation_id}",
+                )
+
+            annotation_entries[annotation_id] = AnnotationRegistryEntry(
+                annotation_id=annotation_id,
+                display_name=display_name,
+                path=annotation_path.resolve(),
+                description=description,
+            )
+
+    return annotation_entries
+
+
+def get_annotation_entry(annotation_id: str) -> AnnotationRegistryEntry:
+    annotation_entry = load_annotation_registry().get(annotation_id)
+    if annotation_entry is None:
+        raise HTTPException(status_code=404, detail="Unknown annotation selection")
+
+    if not annotation_entry.path.exists():
+        raise HTTPException(status_code=500, detail="Annotation file was not found")
+
+    return annotation_entry
+
+
 def ensure_gfaidx_binary() -> None:
     if not GFAIDX_BINARY.exists():
         raise HTTPException(status_code=500, detail="gfaidx binary was not found")
@@ -213,6 +302,35 @@ def list_graphs() -> list[GraphInfo]:
         )
         for entry in load_graph_registry().values()
     ]
+
+
+@app.get("/api/annotations", response_model=list[AnnotationInfo])
+def list_annotations() -> list[AnnotationInfo]:
+    """Return the server-controlled BED files that the UI can load."""
+    return [
+        AnnotationInfo(
+            id=entry.annotation_id,
+            name=entry.display_name,
+            description=entry.description,
+        )
+        for entry in load_annotation_registry().values()
+    ]
+
+
+@app.get("/api/annotations/{annotation_id}", response_class=PlainTextResponse)
+def get_annotation(annotation_id: str) -> str:
+    """Return a whitelisted BED/TSV annotation file as plain text."""
+    annotation_entry = get_annotation_entry(annotation_id)
+
+    try:
+        return annotation_entry.path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Annotation file is not valid UTF-8 text",
+        ) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @app.get("/api/graphs/{graph_id}/region-paths", response_model=list[RegionPathInfo])

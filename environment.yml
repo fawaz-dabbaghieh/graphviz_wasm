@@ -1,0 +1,10 @@
+name: graphviz-wasm
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python >=3.10
+  - nodejs >=20
+  - fastapi
+  - uvicorn-standard
+  - gfaidx

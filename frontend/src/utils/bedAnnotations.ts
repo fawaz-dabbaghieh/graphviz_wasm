@@ -88,11 +88,13 @@ function parseOptionalColumnIndex(
 function findHeaderIndex(
   normalizedHeader: string[],
   candidates: string[],
-  allowedIndexes: Set<number>,
+  allowedIndexes?: Set<number>,
 ): number {
   const candidateSet = new Set(candidates)
 
-  for (const index of allowedIndexes) {
+  for (let index = 0; index < normalizedHeader.length; index += 1) {
+    if (allowedIndexes && !allowedIndexes.has(index)) continue
+
     if (candidateSet.has(normalizedHeader[index])) {
       return index
     }
@@ -108,18 +110,18 @@ function resolveColumnRoles(
 ): ColumnRoles {
   const normalizedHeader = header.map(normalizeHeader)
   const allowedIndexes = new Set(selectedIndexes)
-  const chromosome = findHeaderIndex(
-    normalizedHeader,
-    CHROMOSOME_HEADERS,
-    allowedIndexes,
-  )
+  const chromosome = findHeaderIndex(normalizedHeader, CHROMOSOME_HEADERS)
   const start =
     parseOptionalColumnIndex(options.startColumn, 'Start', header.length) ??
-    findHeaderIndex(normalizedHeader, START_HEADERS, allowedIndexes)
+    findHeaderIndex(normalizedHeader, START_HEADERS)
   const end =
     parseOptionalColumnIndex(options.endColumn, 'End', header.length) ??
-    findHeaderIndex(normalizedHeader, END_HEADERS, allowedIndexes)
+    findHeaderIndex(normalizedHeader, END_HEADERS)
   let id = findHeaderIndex(normalizedHeader, ID_HEADERS, allowedIndexes)
+
+  if (id < 0) {
+    id = findHeaderIndex(normalizedHeader, ID_HEADERS)
+  }
 
   if (id < 0) {
     id =

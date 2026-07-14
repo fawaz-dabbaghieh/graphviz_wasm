@@ -17,6 +17,7 @@ import type {
   ColorScheme,
   Graph,
   IndexedGraph,
+  IndexedAnnotation,
   RegionPath,
   BedAnnotation,
 } from './types'
@@ -40,6 +41,18 @@ async function readBackendError(response: Response): Promise<string> {
   }
 
   return response.text()
+}
+
+function getDefaultBackendUrl(): string {
+  return (
+    localStorage.getItem('backendUrl') ||
+    import.meta.env.VITE_BACKEND_URL ||
+    'http://localhost:8000'
+  )
+}
+
+function normalizeBackendUrl(url: string): string {
+  return url.trim().replace(/\/+$/, '')
 }
 
 function App({ worker }: AppProps) {
@@ -101,10 +114,17 @@ function App({ worker }: AppProps) {
   const [bedAnnotations, setBedAnnotations] = useState<BedAnnotation[]>([])
   const [selectedBedAnnotation, setSelectedBedAnnotation] =
     useState<BedAnnotation | null>(null)
-  const backendUrl = useMemo(
-    () => import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:8000',
-    [],
-  )
+  const [indexedAnnotations, setIndexedAnnotations] = useState<
+    IndexedAnnotation[]
+  >([])
+  const [isLoadingIndexedAnnotations, setIsLoadingIndexedAnnotations] =
+    useState(false)
+  const [indexedAnnotationError, setIndexedAnnotationError] = useState<
+    string | null
+  >(null)
+  const [isLoadingAnnotationFile, setIsLoadingAnnotationFile] = useState(false)
+  const [backendUrl, setBackendUrl] = useState(getDefaultBackendUrl)
+  const [backendUrlInput, setBackendUrlInput] = useState(getDefaultBackendUrl)
 
   // Drop any stale selections from a previous graph load and preserve the
   // current graph's path ordering for the selector.
@@ -129,6 +149,24 @@ function App({ worker }: AppProps) {
 
   const handleCanvasZoomChange = useCallback((nextZoom: number) => {
     setDisplayZoom(clampZoom(nextZoom))
+  }, [])
+
+  const handleApplyBackendUrl = useCallback(() => {
+    const nextBackendUrl = normalizeBackendUrl(backendUrlInput)
+    if (!nextBackendUrl) return
+
+    localStorage.setItem('backendUrl', nextBackendUrl)
+    setBackendUrl(nextBackendUrl)
+  }, [backendUrlInput])
+
+  const handleResetBackendUrl = useCallback(() => {
+    const defaultBackendUrl = normalizeBackendUrl(
+      import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000',
+    )
+
+    localStorage.removeItem('backendUrl')
+    setBackendUrl(defaultBackendUrl)
+    setBackendUrlInput(defaultBackendUrl)
   }, [])
 
   useEffect(() => {
@@ -172,6 +210,47 @@ function App({ worker }: AppProps) {
     }
 
     loadIndexedGraphs()
+
+    return () => {
+      cancelled = true
+    }
+  }, [backendUrl])
+
+  useEffect(() => {
+    let cancelled = false
+
+    const loadIndexedAnnotations = async () => {
+      try {
+        setIsLoadingIndexedAnnotations(true)
+        setIndexedAnnotationError(null)
+
+        const response = await fetch(`${backendUrl}/api/annotations`)
+        if (!response.ok) {
+          const errorText = await readBackendError(response)
+          throw new Error(errorText || `Backend returned HTTP ${response.status}`)
+        }
+
+        const annotations = (await response.json()) as IndexedAnnotation[]
+        if (cancelled) return
+
+        setIndexedAnnotations(annotations)
+      } catch (error) {
+        if (cancelled) return
+
+        const message =
+          error instanceof Error
+            ? error.message
+            : 'Failed to load annotation list'
+        setIndexedAnnotationError(message)
+        setIndexedAnnotations([])
+      } finally {
+        if (!cancelled) {
+          setIsLoadingIndexedAnnotations(false)
+        }
+      }
+    }
+
+    loadIndexedAnnotations()
 
     return () => {
       cancelled = true
@@ -268,6 +347,42 @@ function App({ worker }: AppProps) {
       setSelectedBedAnnotation(null)
     },
     [],
+  )
+
+  const handleLoadIndexedAnnotation = useCallback(
+    async (annotationId: string) => {
+      const selectedAnnotation = indexedAnnotations.find(
+        annotation => annotation.id === annotationId,
+      )
+
+      try {
+        setIsLoadingAnnotationFile(true)
+        setLoadError(null)
+
+        const response = await fetch(
+          `${backendUrl}/api/annotations/${encodeURIComponent(annotationId)}`,
+        )
+        if (!response.ok) {
+          const errorText = await readBackendError(response)
+          throw new Error(errorText || `Backend returned HTTP ${response.status}`)
+        }
+
+        return {
+          text: await response.text(),
+          filename: selectedAnnotation?.name ?? annotationId,
+        }
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : 'Failed to load annotation file'
+        setLoadError(message)
+        throw error
+      } finally {
+        setIsLoadingAnnotationFile(false)
+      }
+    },
+    [backendUrl, indexedAnnotations],
   )
 
   const handleSelectBedAnnotation = useCallback(
@@ -813,6 +928,26 @@ function App({ worker }: AppProps) {
               )}
             </div>
           </div>
+          <form
+            className="backend-url-control"
+            onSubmit={event => {
+              event.preventDefault()
+              handleApplyBackendUrl()
+            }}
+          >
+            <label htmlFor="backend-url-input">Backend</label>
+            <input
+              id="backend-url-input"
+              type="url"
+              value={backendUrlInput}
+              onChange={event => setBackendUrlInput(event.currentTarget.value)}
+              placeholder="http://192.168.1.10:8000"
+            />
+            <button type="submit">Apply</button>
+            <button type="button" onClick={handleResetBackendUrl}>
+              Reset
+            </button>
+          </form>
         </div>
       </header>
 
@@ -908,6 +1043,11 @@ function App({ worker }: AppProps) {
                 selectedAnnotation={selectedBedAnnotation}
                 onAnnotationsChange={handleBedAnnotationsChange}
                 onSelectAnnotation={handleSelectBedAnnotation}
+                indexedAnnotations={indexedAnnotations}
+                indexedAnnotationError={indexedAnnotationError}
+                isLoadingIndexedAnnotations={isLoadingIndexedAnnotations}
+                isLoadingAnnotationFile={isLoadingAnnotationFile}
+                onLoadIndexedAnnotation={handleLoadIndexedAnnotation}
               />
             </div>
           ) : (

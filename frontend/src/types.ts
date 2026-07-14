@@ -40,6 +40,12 @@ export interface IndexedGraph {
   description: string
 }
 
+export interface IndexedAnnotation {
+  id: string
+  name: string
+  description: string
+}
+
 export interface RegionPath {
   source: string
   reference: string

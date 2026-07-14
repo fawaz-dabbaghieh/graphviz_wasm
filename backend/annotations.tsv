@@ -1,0 +1,3 @@
+annotation_id	display_name	path	description
+chr22_ucsc_transcripts	chr22 UCSC transcripts	indexed_example/chr22_annotations.bed	UCSC chr22 transcript BED table
+chr22_graphviz_annotations	chr22 GraphViz annotations	indexed_example/chr22_annotations_for_graphviz.bed	Simplified chr22 BED table for GraphViz testing
