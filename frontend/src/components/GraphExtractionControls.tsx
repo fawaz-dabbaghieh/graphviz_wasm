@@ -17,6 +17,10 @@ interface GraphExtractionControlsProps {
   onSelectedRegionPathIndexChange: (index: number) => void
   regionPathError: string | null
   isLoadingRegionPaths: boolean
+  manualRegionReference: string
+  onManualRegionReferenceChange: (value: string) => void
+  manualRegionSequence: string
+  onManualRegionSequenceChange: (value: string) => void
   regionStart: string
   onRegionStartChange: (value: string) => void
   regionEnd: string
@@ -41,6 +45,10 @@ export function GraphExtractionControls({
   onSelectedRegionPathIndexChange,
   regionPathError,
   isLoadingRegionPaths,
+  manualRegionReference,
+  onManualRegionReferenceChange,
+  manualRegionSequence,
+  onManualRegionSequenceChange,
   regionStart,
   onRegionStartChange,
   regionEnd,
@@ -51,6 +59,7 @@ export function GraphExtractionControls({
   const [graphPanelExpanded, setGraphPanelExpanded] = useState(true)
   const selectedRegionPath = regionPaths[selectedRegionPathIndex]
   const controlsDisabled = isExtracting || isLoadingGraphs || graphs.length === 0
+  const useManualRegion = regionPaths.length === 0
 
   return (
     <div className="layout-controls graph-extraction-controls">
@@ -200,10 +209,46 @@ export function GraphExtractionControls({
                   </div>
                 ) : (
                   <div className="control-hint">
-                    Choose a graph to load coordinate tracks.
+                    No coordinate index found. Enter the sequence manually below.
                   </div>
                 )}
               </div>
+
+              {useManualRegion && (
+                <>
+                  <div className="control-group">
+                    <label htmlFor="manual-region-sequence">Sequence</label>
+                    <input
+                      id="manual-region-sequence"
+                      className="control-input"
+                      type="text"
+                      value={manualRegionSequence}
+                      onChange={event =>
+                        onManualRegionSequenceChange(event.currentTarget.value)
+                      }
+                      placeholder="chr22"
+                      disabled={controlsDisabled || isLoadingRegionPaths}
+                    />
+                  </div>
+
+                  <div className="control-group">
+                    <label htmlFor="manual-region-reference">
+                      Reference Sample
+                    </label>
+                    <input
+                      id="manual-region-reference"
+                      className="control-input"
+                      type="text"
+                      value={manualRegionReference}
+                      onChange={event =>
+                        onManualRegionReferenceChange(event.currentTarget.value)
+                      }
+                      placeholder="optional"
+                      disabled={controlsDisabled || isLoadingRegionPaths}
+                    />
+                  </div>
+                </>
+              )}
 
               <div className="control-row">
                 <div className="control-group">
@@ -219,9 +264,7 @@ export function GraphExtractionControls({
                       onRegionStartChange(event.currentTarget.value)
                     }
                     disabled={
-                      controlsDisabled ||
-                      isLoadingRegionPaths ||
-                      regionPaths.length === 0
+                      controlsDisabled || isLoadingRegionPaths
                     }
                   />
                 </div>
@@ -239,9 +282,7 @@ export function GraphExtractionControls({
                       onRegionEndChange(event.currentTarget.value)
                     }
                     disabled={
-                      controlsDisabled ||
-                      isLoadingRegionPaths ||
-                      regionPaths.length === 0
+                      controlsDisabled || isLoadingRegionPaths
                     }
                   />
                 </div>
@@ -253,7 +294,7 @@ export function GraphExtractionControls({
                 disabled={
                   controlsDisabled ||
                   isLoadingRegionPaths ||
-                  regionPaths.length === 0
+                  (useManualRegion && !manualRegionSequence.trim())
                 }
               >
                 {isExtracting ? 'Extracting...' : 'Extract Region'}

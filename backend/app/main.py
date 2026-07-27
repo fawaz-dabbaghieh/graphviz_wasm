@@ -41,7 +41,9 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 GFAIDX_BINARY = Path(
     os.environ.get(
         "GFAIDX_BINARY",
-        shutil.which("gfaidx") or str(BACKEND_ROOT / "gfaidx_bin" / "gfaidx"),
+        str(BACKEND_ROOT / "gfaidx_bin" / "gfaidx")
+        if (BACKEND_ROOT / "gfaidx_bin" / "gfaidx").exists()
+        else shutil.which("gfaidx") or str(BACKEND_ROOT / "gfaidx_bin" / "gfaidx"),
     )
 )
 GRAPH_REGISTRY_PATH = BACKEND_ROOT / "graphs.tsv"
@@ -355,10 +357,13 @@ def list_region_paths(graph_id: str) -> list[RegionPathInfo]:
     except subprocess.TimeoutExpired as exc:
         raise HTTPException(status_code=504, detail="gfaidx path listing timed out") from exc
     except subprocess.CalledProcessError as exc:
+        command_output = command_output_from_error(exc)
+        if "Coordinate index does not exist" in command_output:
+            return []
+
         raise HTTPException(
             status_code=500,
-            detail=command_output_from_error(exc)
-            or f"gfaidx failed with exit code {exc.returncode}",
+            detail=command_output or f"gfaidx failed with exit code {exc.returncode}",
         ) from exc
     except OSError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

@@ -105,6 +105,8 @@ function App({ worker }: AppProps) {
   const [regionPathError, setRegionPathError] = useState<string | null>(null)
   const [subgraphStartNode, setSubgraphStartNode] = useState('')
   const [extractionMaxNodes, setExtractionMaxNodes] = useState('200')
+  const [manualRegionReference, setManualRegionReference] = useState('')
+  const [manualRegionSequence, setManualRegionSequence] = useState('')
   const [regionStart, setRegionStart] = useState('')
   const [regionEnd, setRegionEnd] = useState('')
   const [isExtractingSubgraph, setIsExtractingSubgraph] = useState(false)
@@ -264,6 +266,8 @@ function App({ worker }: AppProps) {
       if (!selectedIndexedGraph) {
         setRegionPaths([])
         setSelectedRegionPathIndex(0)
+        setManualRegionReference('')
+        setManualRegionSequence('')
         setRegionStart('')
         setRegionEnd('')
         return
@@ -274,6 +278,8 @@ function App({ worker }: AppProps) {
         setRegionPathError(null)
         setRegionPaths([])
         setSelectedRegionPathIndex(0)
+        setManualRegionReference('')
+        setManualRegionSequence('')
         setRegionStart('')
         setRegionEnd('')
 
@@ -295,9 +301,13 @@ function App({ worker }: AppProps) {
         const firstPath = paths[0]
         if (firstPath) {
           const defaultEnd = Math.min(firstPath.start + 100000, firstPath.end)
+          setManualRegionReference(firstPath.reference)
+          setManualRegionSequence(firstPath.sequence)
           setRegionStart(String(firstPath.start))
           setRegionEnd(String(defaultEnd))
         } else {
+          setManualRegionReference('')
+          setManualRegionSequence('')
           setRegionStart('')
           setRegionEnd('')
         }
@@ -311,6 +321,8 @@ function App({ worker }: AppProps) {
         setRegionPathError(message)
         setRegionPaths([])
         setSelectedRegionPathIndex(0)
+        setManualRegionReference('')
+        setManualRegionSequence('')
         setRegionStart('')
         setRegionEnd('')
       } finally {
@@ -334,6 +346,8 @@ function App({ worker }: AppProps) {
 
       if (regionPath) {
         const defaultEnd = Math.min(regionPath.start + 100000, regionPath.end)
+        setManualRegionReference(regionPath.reference)
+        setManualRegionSequence(regionPath.sequence)
         setRegionStart(String(regionPath.start))
         setRegionEnd(String(defaultEnd))
       }
@@ -418,11 +432,17 @@ function App({ worker }: AppProps) {
 
       if (matchingRegionPathIndex >= 0) {
         setSelectedRegionPathIndex(matchingRegionPathIndex)
+        setManualRegionReference(
+          regionPaths[matchingRegionPathIndex]?.reference ?? '',
+        )
+        setManualRegionSequence(
+          regionPaths[matchingRegionPathIndex]?.sequence ?? annotation.chromosome,
+        )
         setLoadError(null)
       } else {
-        setLoadError(
-          `Selected annotation uses chromosome "${annotation.chromosome}", but no matching coordinate track was found for the selected graph.`,
-        )
+        setManualRegionReference('')
+        setManualRegionSequence(annotation.chromosome)
+        setLoadError(null)
       }
     },
     [regionPaths],
@@ -544,6 +564,8 @@ function App({ worker }: AppProps) {
 
   const handleExtractRegion = useCallback(async () => {
     const selectedRegionPath = regionPaths[selectedRegionPathIndex]
+    const reference = selectedRegionPath?.reference ?? manualRegionReference.trim()
+    const sequence = selectedRegionPath?.sequence ?? manualRegionSequence.trim()
     const start = Number(regionStart)
     const end = Number(regionEnd)
     const maxNodes = Number(extractionMaxNodes)
@@ -553,8 +575,8 @@ function App({ worker }: AppProps) {
       return
     }
 
-    if (!selectedRegionPath) {
-      setLoadError('Choose a coordinate track before extracting a region')
+    if (!sequence) {
+      setLoadError('Enter a sequence before extracting a region')
       return
     }
 
@@ -569,8 +591,8 @@ function App({ worker }: AppProps) {
     }
 
     if (
-      start < selectedRegionPath.start ||
-      end > selectedRegionPath.end
+      selectedRegionPath &&
+      (start < selectedRegionPath.start || end > selectedRegionPath.end)
     ) {
       setLoadError('Region must stay within the selected coordinate track bounds')
       return
@@ -592,8 +614,8 @@ function App({ worker }: AppProps) {
         },
         body: JSON.stringify({
           graph_id: selectedIndexedGraph,
-          reference: selectedRegionPath.reference,
-          sequence: selectedRegionPath.sequence,
+          reference,
+          sequence,
           start,
           end,
           max_nodes: maxNodes,
@@ -606,12 +628,12 @@ function App({ worker }: AppProps) {
       }
 
       const gfaText = await response.text()
-      const referencePrefix = selectedRegionPath.reference
-        ? `${selectedRegionPath.reference}_`
+      const referencePrefix = reference
+        ? `${reference}_`
         : ''
       loadGFAFromText(
         gfaText,
-        `${selectedIndexedGraph}_${referencePrefix}${selectedRegionPath.sequence}_${start}_${end}.gfa`,
+        `${selectedIndexedGraph}_${referencePrefix}${sequence}_${start}_${end}.gfa`,
       )
     } catch (error) {
       const message =
@@ -624,6 +646,8 @@ function App({ worker }: AppProps) {
     backendUrl,
     extractionMaxNodes,
     loadGFAFromText,
+    manualRegionReference,
+    manualRegionSequence,
     regionEnd,
     regionPaths,
     regionStart,
@@ -692,9 +716,10 @@ function App({ worker }: AppProps) {
       return
     }
 
-    // New graphs start with every path visible so the default behavior matches
-    // the original "draw all paths" view until the user filters it down.
-    setSelectedPathNames(currentGraph.paths.map(path => path.name))
+    const availablePathNames = new Set(currentGraph.paths.map(path => path.name))
+    setSelectedPathNames(currentSelected =>
+      currentSelected.filter(pathName => availablePathNames.has(pathName)),
+    )
   }, [currentGraph])
 
   // Compute layout when graph or options change
@@ -980,6 +1005,10 @@ function App({ worker }: AppProps) {
             onSelectedRegionPathIndexChange={handleSelectedRegionPathChange}
             regionPathError={regionPathError}
             isLoadingRegionPaths={isLoadingRegionPaths}
+            manualRegionReference={manualRegionReference}
+            onManualRegionReferenceChange={setManualRegionReference}
+            manualRegionSequence={manualRegionSequence}
+            onManualRegionSequenceChange={setManualRegionSequence}
             regionStart={regionStart}
             onRegionStartChange={setRegionStart}
             regionEnd={regionEnd}
