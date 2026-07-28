@@ -114,6 +114,9 @@ export interface GraphStats {
 
 export interface Transform {
   scale: number
+  // Rotation is stored in radians; positive values appear clockwise because
+  // canvas screen coordinates increase downward.
+  rotation: number
   translateX: number
   translateY: number
 }

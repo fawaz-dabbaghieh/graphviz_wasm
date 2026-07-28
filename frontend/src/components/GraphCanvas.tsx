@@ -50,6 +50,28 @@ interface GraphCanvasProps {
 const SEQUENCE_PREVIEW_CUTOFF = 100
 const SEQUENCE_PREVIEW_PREFIX_LENGTH = Math.ceil(SEQUENCE_PREVIEW_CUTOFF / 2)
 const SEQUENCE_PREVIEW_SUFFIX_LENGTH = Math.floor(SEQUENCE_PREVIEW_CUTOFF / 2)
+// Wheel devices report very different delta sizes, so cap each rotation update
+// while retaining small trackpad deltas for continuous motion.
+const ROTATION_RADIANS_PER_PIXEL = 0.002
+const MAX_ROTATION_STEP = Math.PI / 15
+
+// Keep accumulated angles bounded so trigonometric calculations remain stable
+// after long rotation sessions.
+function normalizeRotation(rotation: number): number {
+  return Math.atan2(Math.sin(rotation), Math.cos(rotation))
+}
+
+// Normalize line/page wheel units to approximate CSS pixels before converting
+// the movement to radians.
+function getWheelDeltaPixels(event: WheelEvent, pageHeight: number): number {
+  if (event.deltaMode === WheelEvent.DOM_DELTA_LINE) {
+    return event.deltaY * 16
+  }
+  if (event.deltaMode === WheelEvent.DOM_DELTA_PAGE) {
+    return event.deltaY * pageHeight
+  }
+  return event.deltaY
+}
 
 function getNodeSequence(node: GraphNode): string | null {
   if (!node.sequence || node.sequence === '*') return null
@@ -91,11 +113,13 @@ function GraphCanvasComponent({
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [transform, setTransform] = useState<Transform>({
     scale: 1,
+    rotation: 0,
     translateX: 0,
     translateY: 0,
   })
   const transformRef = useRef<Transform>({
     scale: 1,
+    rotation: 0,
     translateX: 0,
     translateY: 0,
   })
@@ -209,6 +233,8 @@ function GraphCanvasComponent({
 
     const nextTransform = {
       scale: fitScale,
+      // A newly computed layout starts in its original OGDF orientation.
+      rotation: 0,
       translateX: offsetX,
       translateY: offsetY,
     }
@@ -239,6 +265,8 @@ function GraphCanvasComponent({
     const centerY = height / 2
 
     const nextTransform = {
+      // Slider zoom changes only scale/translation and preserves rotation.
+      ...prev,
       scale: zoom,
       translateX: centerX - (centerX - prev.translateX) * scaleFactor,
       translateY: centerY - (centerY - prev.translateY) * scaleFactor,
@@ -277,8 +305,19 @@ function GraphCanvasComponent({
 
     const nodeWidth = maxX - minX
     const nodeHeight = maxY - minY
-    const focusWidth = Math.max(nodeWidth * 4, 80)
-    const focusHeight = Math.max(nodeHeight * 4, 80)
+    const rotation = transformRef.current.rotation
+    const rotationCosine = Math.cos(rotation)
+    const rotationSine = Math.sin(rotation)
+    // Project the node's bounding box through the current rotation so focus
+    // scaling leaves similar surrounding context at every angle.
+    const rotatedNodeWidth =
+      Math.abs(nodeWidth * rotationCosine) +
+      Math.abs(nodeHeight * rotationSine)
+    const rotatedNodeHeight =
+      Math.abs(nodeWidth * rotationSine) +
+      Math.abs(nodeHeight * rotationCosine)
+    const focusWidth = Math.max(rotatedNodeWidth * 4, 80)
+    const focusHeight = Math.max(rotatedNodeHeight * 4, 80)
     const availableWidth = Math.max(width - 160, width * 0.5)
     const availableHeight = Math.max(height - 160, height * 0.5)
     const focusScale = Math.min(
@@ -290,10 +329,17 @@ function GraphCanvasComponent({
     )
     const centerX = (minX + maxX) / 2
     const centerY = (minY + maxY) / 2
+    // Rotate the graph-space node center before solving the translation that
+    // places it at the center of the canvas.
+    const rotatedCenterX =
+      (centerX * rotationCosine - centerY * rotationSine) * nextScale
+    const rotatedCenterY =
+      (centerX * rotationSine + centerY * rotationCosine) * nextScale
     const nextTransform = {
       scale: nextScale,
-      translateX: width / 2 - centerX * nextScale,
-      translateY: height / 2 - centerY * nextScale,
+      rotation,
+      translateX: width / 2 - rotatedCenterX,
+      translateY: height / 2 - rotatedCenterY,
     }
 
     transformRef.current = nextTransform
@@ -704,13 +750,28 @@ function GraphCanvasComponent({
     ctx.fillStyle = isDarkMode ? '#1a1a1a' : '#ffffff'
     ctx.fillRect(0, 0, width, height)
 
-    const { scale, translateX, translateY } = transform
+    const { scale, rotation, translateX, translateY } = transform
+    // Cache the trigonometric values once per redraw instead of recomputing
+    // them for every node segment and edge control point.
+    const rotationCosine = Math.cos(rotation)
+    const rotationSine = Math.sin(rotation)
 
-    // Helper to transform coordinates
-    const transformPoint = (x: number, y: number) => ({
-      x: x * scale + translateX,
-      y: y * scale + translateY,
-    })
+    // Apply uniform scale, viewport rotation, and screen translation to each
+    // graph-space point.
+    const transformPoint = (x: number, y: number) => {
+      const scaledX = x * scale
+      const scaledY = y * scale
+      return {
+        x:
+          scaledX * rotationCosine -
+          scaledY * rotationSine +
+          translateX,
+        y:
+          scaledX * rotationSine +
+          scaledY * rotationCosine +
+          translateY,
+      }
+    }
 
     // Helper function to draw an arrowhead at a point
     const drawArrowhead = (
@@ -1164,6 +1225,51 @@ function GraphCanvasComponent({
       e.preventDefault()
       e.stopPropagation()
 
+      const prev = transformRef.current
+
+      if (e.altKey) {
+        // Alt+wheel rotates around the canvas center, keeping the view stable
+        // instead of orbiting around a changing pointer location.
+        const wheelDeltaPixels = getWheelDeltaPixels(e, height)
+        const rotationDelta = Math.max(
+          -MAX_ROTATION_STEP,
+          Math.min(
+            MAX_ROTATION_STEP,
+            wheelDeltaPixels * ROTATION_RADIANS_PER_PIXEL,
+          ),
+        )
+        if (Math.abs(rotationDelta) < 0.0001) return
+
+        const pivotX = width / 2
+        const pivotY = height / 2
+        const deltaCosine = Math.cos(rotationDelta)
+        const deltaSine = Math.sin(rotationDelta)
+        const translationFromPivotX = prev.translateX - pivotX
+        const translationFromPivotY = prev.translateY - pivotY
+        const nextTransform = {
+          ...prev,
+          rotation: normalizeRotation(prev.rotation + rotationDelta),
+          // Rotate the existing screen translation around the same pivot so
+          // graph content does not jump while the angle changes.
+          translateX:
+            pivotX +
+            translationFromPivotX * deltaCosine -
+            translationFromPivotY * deltaSine,
+          translateY:
+            pivotY +
+            translationFromPivotX * deltaSine +
+            translationFromPivotY * deltaCosine,
+        }
+
+        transformRef.current = nextTransform
+        setTransform(nextTransform)
+        // Hover geometry moves during rotation, so discard stale tooltips
+        // until the pointer moves and hit-testing runs again.
+        setHoveredNode(null)
+        setHoveredEdge(null)
+        return
+      }
+
       const rect = canvas.getBoundingClientRect()
       const mouseX = e.clientX - rect.left
       const mouseY = e.clientY - rect.top
@@ -1171,13 +1277,14 @@ function GraphCanvasComponent({
       const delta = -e.deltaY * 0.001
       const scaleFactor = Math.exp(delta)
 
-      const prev = transformRef.current
       const newScale = clampZoom(prev.scale * scaleFactor)
       if (Math.abs(newScale - prev.scale) < 0.0001) return
 
       const actualFactor = newScale / prev.scale
 
       const nextTransform = {
+        // Ordinary wheel zoom keeps the current viewport rotation.
+        ...prev,
         scale: newScale,
         translateX: mouseX - (mouseX - prev.translateX) * actualFactor,
         translateY: mouseY - (mouseY - prev.translateY) * actualFactor,
@@ -1190,7 +1297,7 @@ function GraphCanvasComponent({
 
     canvas.addEventListener('wheel', wheelHandler, { passive: false })
     return () => canvas.removeEventListener('wheel', wheelHandler)
-  }, [reportInternalZoom])
+  }, [height, reportInternalZoom, width])
 
   // Hit detection helper - distance from point to line segment
   const distanceToSegment = (
@@ -1297,9 +1404,20 @@ function GraphCanvasComponent({
           }
         }
 
-        // Calculate delta in graph coordinates
-        const dx = (e.clientX - dragStart.x) / transform.scale
-        const dy = (e.clientY - dragStart.y) / transform.scale
+        const screenDeltaX = e.clientX - dragStart.x
+        const screenDeltaY = e.clientY - dragStart.y
+        const inverseRotationCosine = Math.cos(transform.rotation)
+        const inverseRotationSine = Math.sin(transform.rotation)
+        // Undo viewport rotation and scale so dragging follows the pointer in
+        // graph coordinates at every displayed angle.
+        const dx =
+          (screenDeltaX * inverseRotationCosine +
+            screenDeltaY * inverseRotationSine) /
+          transform.scale
+        const dy =
+          (-screenDeltaX * inverseRotationSine +
+            screenDeltaY * inverseRotationCosine) /
+          transform.scale
 
         setModifiedNodePositions(prev => {
           const current = prev || layoutResult.nodePositions
@@ -1337,11 +1455,21 @@ function GraphCanvasComponent({
         setDragStart({ x: e.clientX, y: e.clientY })
       } else {
         // Hit detection for hover
-        const { scale, translateX, translateY } = transform
-
-        // Inverse transform to get graph coordinates
-        const graphX = (mouseX - translateX) / scale
-        const graphY = (mouseY - translateY) / scale
+        const { scale, rotation, translateX, translateY } = transform
+        const translatedMouseX = mouseX - translateX
+        const translatedMouseY = mouseY - translateY
+        const inverseRotationCosine = Math.cos(rotation)
+        const inverseRotationSine = Math.sin(rotation)
+        // Invert translation, rotation, and scale so hover hit-testing remains
+        // aligned with the rotated graph.
+        const graphX =
+          (translatedMouseX * inverseRotationCosine +
+            translatedMouseY * inverseRotationSine) /
+          scale
+        const graphY =
+          (-translatedMouseX * inverseRotationSine +
+            translatedMouseY * inverseRotationCosine) /
+          scale
 
         // Check nodes
         let foundNode: string | null = null
