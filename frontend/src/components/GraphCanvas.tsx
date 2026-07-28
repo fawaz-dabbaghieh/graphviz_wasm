@@ -41,6 +41,7 @@ interface GraphCanvasProps {
   // visible without changing the underlying graph model.
   visiblePathIds?: Set<string>
   nodeColorOverrides?: Record<string, string>
+  onUseAsStartNode?: (nodeId: string) => void
   debugHitboxes?: boolean // Hidden flag to visualize edge hit areas
 }
 
@@ -80,6 +81,7 @@ function GraphCanvasComponent({
   drawPaths = true,
   visiblePathIds,
   nodeColorOverrides,
+  onUseAsStartNode,
   debugHitboxes = false,
 }: GraphCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -1593,6 +1595,48 @@ function GraphCanvasComponent({
           >
             View Details
           </button>
+          {onUseAsStartNode && (
+            <button
+              onClick={e => {
+                e.stopPropagation()
+                const node = graph.nodes.find(
+                  candidate => candidate.id === contextMenu.nodeId,
+                )
+                if (node) {
+                  onUseAsStartNode(node.name)
+                }
+                setContextMenu({
+                  visible: false,
+                  x: 0,
+                  y: 0,
+                  nodeId: null,
+                })
+              }}
+              style={{
+                width: '100%',
+                padding: '8px 12px',
+                background: 'transparent',
+                border: 'none',
+                borderTop: isDarkMode
+                  ? '1px solid #444'
+                  : '1px solid #ddd',
+                textAlign: 'left',
+                cursor: 'pointer',
+                fontSize: '13px',
+                color: isDarkMode ? '#e0e0e0' : '#333',
+              }}
+              onMouseEnter={e => {
+                e.currentTarget.style.background = isDarkMode
+                  ? '#3a3a3a'
+                  : '#f0f0f0'
+              }}
+              onMouseLeave={e => {
+                e.currentTarget.style.background = 'transparent'
+              }}
+            >
+              Use as Start Node
+            </button>
+          )}
         </div>
       )}
 
@@ -1752,19 +1796,19 @@ function GraphCanvasComponent({
           const toNode = displayGraph.nodesByKey.get(edge.toNodeKey)?.node
           if (!fromNode || !toNode) return null
 
-          const visiblePathTraversals = drawPaths
-            ? getVisiblePathTraversals(edge.pathTraversals)
-            : edge.pathTraversals
-          const visibleEdgePathIds = Array.from(
-            new Set(visiblePathTraversals.map(traversal => traversal.pathId)),
+          const visiblePathTraversals = getVisiblePathTraversals(
+            edge.pathTraversals,
           )
+          const visibleEdgePathIdSet = new Set(
+            visiblePathTraversals.map(traversal => traversal.pathId),
+          )
+          const visibleEdgePathIds = Array.from(visibleEdgePathIdSet)
 
           // Path overlays are directional even though the base graph edge is
-          // drawn as one collapsed connection. Group tooltip entries by the
-          // exact oriented traversal so users can see which paths go through
-          // e.g. "53728108+ -> 53728106-" versus the opposite orientation.
+          // drawn as one collapsed connection. Always group every traversal
+          // for the tooltip; path visibility affects only the status/count.
           const pathDirectionGroups = Array.from(
-            visiblePathTraversals.reduce(
+            edge.pathTraversals.reduce(
               (groups, traversal) => {
                 const directionKey = `${traversal.edge.from}->${traversal.edge.to}`
                 const existingGroup = groups.get(directionKey)
@@ -1830,11 +1874,8 @@ function GraphCanvasComponent({
                   >
                     <div style={{ marginBottom: '3px', opacity: 0.9 }}>
                       <strong>
-                        Paths ({visibleEdgePathIds.length}
-                        {visibleEdgePathIds.length !== edge.pathIds.length
-                          ? ` visible / ${edge.pathIds.length} total`
-                          : ''}
-                        ):
+                        Paths ({visibleEdgePathIds.length} visible /{' '}
+                        {edge.pathIds.length} total):
                       </strong>
                     </div>
                     {pathDirectionGroups.map(group => (
@@ -1855,7 +1896,9 @@ function GraphCanvasComponent({
                               alignItems: 'center',
                               gap: '6px',
                               marginLeft: '18px',
-                              opacity: 0.8,
+                              opacity: visibleEdgePathIdSet.has(pathId)
+                                ? 0.9
+                                : 0.55,
                             }}
                           >
                             <div

@@ -1227,6 +1227,7 @@ function App({ worker }: AppProps) {
                     drawPaths={drawPaths}
                     visiblePathIds={visiblePathNameSet}
                     nodeColorOverrides={nodeColorOverrides}
+                    onUseAsStartNode={setSubgraphStartNode}
                   />
                   {/* Keep path selection close to the rendered graph so long path
                     names and search results are easier to scan. */}
