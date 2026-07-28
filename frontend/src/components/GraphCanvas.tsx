@@ -40,6 +40,7 @@ interface GraphCanvasProps {
   // The selector hands the canvas the exact set of path IDs that should remain
   // visible without changing the underlying graph model.
   visiblePathIds?: Set<string>
+  nodeColorOverrides?: Record<string, string>
   debugHitboxes?: boolean // Hidden flag to visualize edge hit areas
 }
 
@@ -78,6 +79,7 @@ function GraphCanvasComponent({
   labelLengthThreshold = 0,
   drawPaths = true,
   visiblePathIds,
+  nodeColorOverrides,
   debugHitboxes = false,
 }: GraphCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -272,9 +274,38 @@ function GraphCanvasComponent({
     [drawPaths, visiblePathIds],
   )
 
-  // Color computation based on scheme
-  const getNodeColor = useCallback(
-    (node: GraphNode): [number, number, number] => {
+  // Colors depend on graph data and user settings, not the viewport. Cache
+  // them so wheel/pan redraws only perform a map lookup per visible node.
+  const nodeColorsById = useMemo(() => {
+    const colors = new Map<string, [number, number, number]>()
+    let minDepth = Infinity
+    let maxDepth = -Infinity
+
+    if (colorScheme === 'depth') {
+      graph.nodes.forEach(node => {
+        if (!Number.isFinite(node.depth)) return
+        minDepth = Math.min(minDepth, node.depth)
+        maxDepth = Math.max(maxDepth, node.depth)
+      })
+    }
+
+    const computeNodeColor = (
+      node: GraphNode,
+    ): [number, number, number] => {
+      const overrideColor = nodeColorOverrides?.[node.id]
+      if (overrideColor) {
+        const normalizedColor = overrideColor.replace(/^#/, '')
+        const parsedColor = Number.parseInt(normalizedColor, 16)
+
+        if (normalizedColor.length === 6 && Number.isFinite(parsedColor)) {
+          return [
+            (parsedColor >> 16) & 255,
+            (parsedColor >> 8) & 255,
+            parsedColor & 255,
+          ]
+        }
+      }
+
       switch (colorScheme) {
         case 'uniform':
           // Bandage default: rgb(178, 34, 34) - firebrick red
@@ -330,11 +361,8 @@ function GraphCanvasComponent({
 
         case 'depth': {
           // Color based on depth - use viridis-like color map
-          const allDepths = graph.nodes.map(n => n.depth)
-          const minDepth = Math.min(...allDepths)
-          const maxDepth = Math.max(...allDepths)
           const normalizedDepth =
-            maxDepth > minDepth
+            Number.isFinite(node.depth) && maxDepth > minDepth
               ? (node.depth - minDepth) / (maxDepth - minDepth)
               : 0.5
 
@@ -378,8 +406,19 @@ function GraphCanvasComponent({
         default:
           return [52, 152, 219]
       }
-    },
-    [colorScheme, isDarkMode, graph],
+    }
+
+    graph.nodes.forEach(node => {
+      colors.set(node.id, computeNodeColor(node))
+    })
+
+    return colors
+  }, [colorScheme, graph.nodes, nodeColorOverrides])
+
+  const getNodeColor = useCallback(
+    (node: GraphNode): [number, number, number] =>
+      nodeColorsById.get(node.id) ?? [52, 152, 219],
+    [nodeColorsById],
   )
 
   const getDisplayNodeSegments = useCallback(

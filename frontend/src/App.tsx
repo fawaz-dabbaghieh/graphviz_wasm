@@ -10,6 +10,7 @@ import { urlExamples } from './data/urlExamples'
 import { BandageLayoutWorker } from './utils/BandageLayoutWorker'
 import { parseGFA } from './utils/gfaParser'
 import { convertGFAToGraph } from './utils/gfaConverter'
+import { stripNodeOrientation } from './utils/displayGraph'
 import { clampZoom } from './utils/zoom'
 import type {
   LayoutOptions,
@@ -55,6 +56,8 @@ function normalizeBackendUrl(url: string): string {
   return url.trim().replace(/\/+$/, '')
 }
 
+const LOCAL_GRAPH_ID_PREFIX = '__local_graph__:'
+
 function App({ worker }: AppProps) {
   const [layoutOptions, setLayoutOptions] = useState<LayoutOptions>({
     quality: 2,
@@ -95,8 +98,13 @@ function App({ worker }: AppProps) {
   // Keep path visibility in the React layer so toggling paths never requires
   // recomputing the layout itself.
   const [selectedPathNames, setSelectedPathNames] = useState<string[]>([])
+  const [nodeColorOverrides, setNodeColorOverrides] = useState<
+    Record<string, string>
+  >({})
   const [indexedGraphs, setIndexedGraphs] = useState<IndexedGraph[]>([])
   const [selectedIndexedGraph, setSelectedIndexedGraph] = useState('')
+  const [localGraphOption, setLocalGraphOption] =
+    useState<IndexedGraph | null>(null)
   const [isLoadingIndexedGraphs, setIsLoadingIndexedGraphs] = useState(false)
   const [indexedGraphError, setIndexedGraphError] = useState<string | null>(null)
   const [regionPaths, setRegionPaths] = useState<RegionPath[]>([])
@@ -127,6 +135,23 @@ function App({ worker }: AppProps) {
   const [isLoadingAnnotationFile, setIsLoadingAnnotationFile] = useState(false)
   const [backendUrl, setBackendUrl] = useState(getDefaultBackendUrl)
   const [backendUrlInput, setBackendUrlInput] = useState(getDefaultBackendUrl)
+
+  const graphSelectionOptions = useMemo(() => {
+    if (!localGraphOption) return indexedGraphs
+
+    return [
+      localGraphOption,
+      ...indexedGraphs.filter(graph => graph.id !== localGraphOption.id),
+    ]
+  }, [indexedGraphs, localGraphOption])
+
+  const selectedGraphSupportsExtraction = useMemo(
+    () => indexedGraphs.some(graph => graph.id === selectedIndexedGraph),
+    [indexedGraphs, selectedIndexedGraph],
+  )
+
+  const selectedGraphIsLocal =
+    localGraphOption?.id === selectedIndexedGraph
 
   // Drop any stale selections from a previous graph load and preserve the
   // current graph's path ordering for the selector.
@@ -190,6 +215,10 @@ function App({ worker }: AppProps) {
 
         setIndexedGraphs(graphs)
         setSelectedIndexedGraph(currentGraphId => {
+          if (currentGraphId.startsWith(LOCAL_GRAPH_ID_PREFIX)) {
+            return currentGraphId
+          }
+
           if (graphs.some(graph => graph.id === currentGraphId)) {
             return currentGraphId
           }
@@ -203,7 +232,11 @@ function App({ worker }: AppProps) {
           error instanceof Error ? error.message : 'Failed to load graph list'
         setIndexedGraphError(message)
         setIndexedGraphs([])
-        setSelectedIndexedGraph('')
+        setSelectedIndexedGraph(currentGraphId =>
+          currentGraphId.startsWith(LOCAL_GRAPH_ID_PREFIX)
+            ? currentGraphId
+            : '',
+        )
       } finally {
         if (!cancelled) {
           setIsLoadingIndexedGraphs(false)
@@ -263,7 +296,9 @@ function App({ worker }: AppProps) {
     let cancelled = false
 
     const loadRegionPaths = async () => {
-      if (!selectedIndexedGraph) {
+      if (!selectedIndexedGraph || !selectedGraphSupportsExtraction) {
+        setIsLoadingRegionPaths(false)
+        setRegionPathError(null)
         setRegionPaths([])
         setSelectedRegionPathIndex(0)
         setManualRegionReference('')
@@ -337,7 +372,7 @@ function App({ worker }: AppProps) {
     return () => {
       cancelled = true
     }
-  }, [backendUrl, selectedIndexedGraph])
+  }, [backendUrl, selectedGraphSupportsExtraction, selectedIndexedGraph])
 
   const handleSelectedRegionPathChange = useCallback(
     (index: number) => {
@@ -449,28 +484,48 @@ function App({ worker }: AppProps) {
   )
 
   // Handle loading GFA from text
-  const loadGFAFromText = useCallback((text: string, filename: string) => {
-    try {
-      setLoadingFile(true)
-      setLoadError(null)
+  const loadGFAFromText = useCallback(
+    (
+      text: string,
+      filename: string,
+      source: 'browser' | 'backend-extraction' = 'browser',
+    ) => {
+      try {
+        setLoadingFile(true)
+        setLoadError(null)
 
-      const gfaGraph = parseGFA(text)
-      const graph = convertGFAToGraph(gfaGraph, filename)
+        const gfaGraph = parseGFA(text)
+        const graph = convertGFAToGraph(gfaGraph, filename)
 
-      setCurrentGraph(graph)
-      setColorScheme('uniform')
-      setDrawLabels(false)
-      setFileMenuOpen(false)
-      setExamplesMenuOpen(false)
-    } catch (error) {
-      console.error('Failed to parse GFA:', error)
-      setLoadError(
-        error instanceof Error ? error.message : 'Failed to parse GFA file',
-      )
-    } finally {
-      setLoadingFile(false)
-    }
-  }, [])
+        if (source === 'browser') {
+          const localGraphId = `${LOCAL_GRAPH_ID_PREFIX}${filename}`
+          setLocalGraphOption({
+            id: localGraphId,
+            name: `${filename} (local, not indexed)`,
+            description:
+              'Loaded in the browser without backend-accessible index files',
+          })
+          setSelectedIndexedGraph(localGraphId)
+        } else {
+          setLocalGraphOption(null)
+        }
+
+        setCurrentGraph(graph)
+        setColorScheme('uniform')
+        setDrawLabels(false)
+        setFileMenuOpen(false)
+        setExamplesMenuOpen(false)
+      } catch (error) {
+        console.error('Failed to parse GFA:', error)
+        setLoadError(
+          error instanceof Error ? error.message : 'Failed to parse GFA file',
+        )
+      } finally {
+        setLoadingFile(false)
+      }
+    },
+    [],
+  )
 
   // Handle loading from URL
   const handleLoadFromURL = useCallback(async () => {
@@ -506,7 +561,7 @@ function App({ worker }: AppProps) {
     const startNode = subgraphStartNode.trim()
     const maxNodes = Number(extractionMaxNodes)
 
-    if (!selectedIndexedGraph) {
+    if (!selectedIndexedGraph || !selectedGraphSupportsExtraction) {
       setLoadError('Choose an indexed graph before extracting a subgraph')
       return
     }
@@ -546,6 +601,7 @@ function App({ worker }: AppProps) {
       loadGFAFromText(
         gfaText,
         `${selectedIndexedGraph}_${startNode}_${maxNodes}_nodes.gfa`,
+        'backend-extraction',
       )
     } catch (error) {
       const message =
@@ -558,6 +614,7 @@ function App({ worker }: AppProps) {
     backendUrl,
     extractionMaxNodes,
     loadGFAFromText,
+    selectedGraphSupportsExtraction,
     selectedIndexedGraph,
     subgraphStartNode,
   ])
@@ -570,7 +627,7 @@ function App({ worker }: AppProps) {
     const end = Number(regionEnd)
     const maxNodes = Number(extractionMaxNodes)
 
-    if (!selectedIndexedGraph) {
+    if (!selectedIndexedGraph || !selectedGraphSupportsExtraction) {
       setLoadError('Choose an indexed graph before extracting a region')
       return
     }
@@ -634,6 +691,7 @@ function App({ worker }: AppProps) {
       loadGFAFromText(
         gfaText,
         `${selectedIndexedGraph}_${referencePrefix}${sequence}_${start}_${end}.gfa`,
+        'backend-extraction',
       )
     } catch (error) {
       const message =
@@ -651,6 +709,7 @@ function App({ worker }: AppProps) {
     regionEnd,
     regionPaths,
     regionStart,
+    selectedGraphSupportsExtraction,
     selectedIndexedGraph,
     selectedRegionPathIndex,
   ])
@@ -713,6 +772,7 @@ function App({ worker }: AppProps) {
   useEffect(() => {
     if (!currentGraph?.paths) {
       setSelectedPathNames([])
+      setNodeColorOverrides({})
       return
     }
 
@@ -720,7 +780,66 @@ function App({ worker }: AppProps) {
     setSelectedPathNames(currentSelected =>
       currentSelected.filter(pathName => availablePathNames.has(pathName)),
     )
+    setNodeColorOverrides({})
   }, [currentGraph])
+
+  const handleColorPathNodes = useCallback(
+    (pathName: string, color: string): number => {
+      const path = currentGraph?.paths?.find(candidate => candidate.name === pathName)
+      if (!path || !currentGraph) return 0
+
+      const normalizedColor = color.startsWith('#') ? color : `#${color}`
+      const graphNodeIds = new Set(currentGraph.nodes.map(node => node.id))
+      const graphNodeIdsByDisplayKey = new Map<string, string[]>()
+
+      for (const node of currentGraph.nodes) {
+        const displayKey = stripNodeOrientation(node.id)
+        const existingIds = graphNodeIdsByDisplayKey.get(displayKey) ?? []
+        existingIds.push(node.id)
+        graphNodeIdsByDisplayKey.set(displayKey, existingIds)
+      }
+
+      const matchedNodeIds = new Set<string>()
+      const matchedDisplayKeys = new Set<string>()
+
+      path.nodeIds.forEach(pathNodeId => {
+        const displayKey = stripNodeOrientation(pathNodeId)
+        const candidateNodeIds = [
+          pathNodeId,
+          displayKey,
+          ...(graphNodeIdsByDisplayKey.get(displayKey) ?? []),
+        ]
+
+        candidateNodeIds.forEach(candidateNodeId => {
+          if (graphNodeIds.has(candidateNodeId)) {
+            matchedNodeIds.add(candidateNodeId)
+            matchedDisplayKeys.add(stripNodeOrientation(candidateNodeId))
+          }
+        })
+      })
+
+      if (matchedNodeIds.size === 0) {
+        return 0
+      }
+
+      setNodeColorOverrides(currentOverrides => {
+        const nextOverrides = { ...currentOverrides }
+
+        matchedNodeIds.forEach(nodeId => {
+          nextOverrides[nodeId] = normalizedColor
+        })
+
+        return nextOverrides
+      })
+
+      return matchedDisplayKeys.size
+    },
+    [currentGraph],
+  )
+
+  const handleClearPathNodeColors = useCallback(() => {
+    setNodeColorOverrides({})
+  }, [])
 
   // Compute layout when graph or options change
   const computeLayout = useCallback(async () => {
@@ -990,9 +1109,11 @@ function App({ worker }: AppProps) {
       <main className="app-main">
         <div className="left-panel">
           <GraphExtractionControls
-            graphs={indexedGraphs}
+            graphs={graphSelectionOptions}
             selectedGraphId={selectedIndexedGraph}
             onSelectedGraphIdChange={setSelectedIndexedGraph}
+            supportsExtraction={selectedGraphSupportsExtraction}
+            selectedGraphIsLocal={selectedGraphIsLocal}
             graphListError={indexedGraphError}
             isLoadingGraphs={isLoadingIndexedGraphs}
             maxNodes={extractionMaxNodes}
@@ -1105,6 +1226,7 @@ function App({ worker }: AppProps) {
                     labelLengthThreshold={labelLengthThreshold}
                     drawPaths={drawPaths}
                     visiblePathIds={visiblePathNameSet}
+                    nodeColorOverrides={nodeColorOverrides}
                   />
                   {/* Keep path selection close to the rendered graph so long path
                     names and search results are easier to scan. */}
@@ -1128,6 +1250,8 @@ function App({ worker }: AppProps) {
                           )
                         }
                         onDeselectAll={() => setSelectedPathNames([])}
+                        onColorPathNodes={handleColorPathNodes}
+                        onClearNodeColors={handleClearPathNodeColors}
                       />
                     )}
                 </>

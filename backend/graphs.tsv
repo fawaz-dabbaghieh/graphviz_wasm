@@ -1,2 +1,3 @@
 graph_id	display_name	path	description
 chr22	chr22	indexed_example/chr22.indexed.gfa.gz	CHM13 and GRCh38 chr22 indexed graph
+hla_hprc	hla_chr6_hprc2	/Users/fawaz/projects/gfaidx/test_graphs/hla_hprc2_mc/hla_region.indexed.gfa.gz	"this graph was an extraction of around half a million nodes around the HLA region from the HPRC2 MC graph"

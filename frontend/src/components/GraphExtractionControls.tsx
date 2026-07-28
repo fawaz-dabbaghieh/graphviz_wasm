@@ -5,6 +5,8 @@ interface GraphExtractionControlsProps {
   graphs: IndexedGraph[]
   selectedGraphId: string
   onSelectedGraphIdChange: (graphId: string) => void
+  supportsExtraction: boolean
+  selectedGraphIsLocal: boolean
   graphListError: string | null
   isLoadingGraphs: boolean
   maxNodes: string
@@ -33,6 +35,8 @@ export function GraphExtractionControls({
   graphs,
   selectedGraphId,
   onSelectedGraphIdChange,
+  supportsExtraction,
+  selectedGraphIsLocal,
   graphListError,
   isLoadingGraphs,
   maxNodes,
@@ -58,8 +62,12 @@ export function GraphExtractionControls({
 }: GraphExtractionControlsProps) {
   const [graphPanelExpanded, setGraphPanelExpanded] = useState(true)
   const selectedRegionPath = regionPaths[selectedRegionPathIndex]
-  const controlsDisabled = isExtracting || isLoadingGraphs || graphs.length === 0
-  const useManualRegion = regionPaths.length === 0
+  const controlsDisabled =
+    isExtracting ||
+    isLoadingGraphs ||
+    graphs.length === 0 ||
+    !supportsExtraction
+  const useManualRegion = supportsExtraction && regionPaths.length === 0
 
   return (
     <div className="layout-controls graph-extraction-controls">
@@ -102,7 +110,12 @@ export function GraphExtractionControls({
                   ))
                 )}
               </select>
-              {graphListError ? (
+              {selectedGraphIsLocal ? (
+                <div className="control-hint">
+                  This graph is loaded only in the browser. Node and coordinate
+                  extraction require a graph registered with the backend.
+                </div>
+              ) : graphListError ? (
                 <div className="control-error">{graphListError}</div>
               ) : (
                 <div className="control-hint">
@@ -199,7 +212,11 @@ export function GraphExtractionControls({
                     ))
                   )}
                 </select>
-                {regionPathError ? (
+                {selectedGraphIsLocal ? (
+                  <div className="control-hint">
+                    Coordinate tracks are unavailable for local browser uploads.
+                  </div>
+                ) : regionPathError ? (
                   <div className="control-error">{regionPathError}</div>
                 ) : selectedRegionPath ? (
                   <div className="control-hint">
