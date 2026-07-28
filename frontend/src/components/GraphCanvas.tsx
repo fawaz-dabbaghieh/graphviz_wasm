@@ -32,6 +32,8 @@ interface GraphCanvasProps {
   zoom?: number
   zoomRequestId?: number
   onInternalZoomChange?: (zoom: number) => void
+  focusNodeId?: string | null
+  focusNodeRequestId?: number
   contigThickness?: number
   connectorThickness?: number
   drawLabels?: boolean
@@ -74,6 +76,8 @@ function GraphCanvasComponent({
   zoom,
   zoomRequestId = 0,
   onInternalZoomChange,
+  focusNodeId,
+  focusNodeRequestId = 0,
   contigThickness = 6,
   connectorThickness = 3,
   drawLabels = true,
@@ -96,6 +100,7 @@ function GraphCanvasComponent({
     translateY: 0,
   })
   const handledZoomRequestIdRef = useRef(zoomRequestId)
+  const handledFocusRequestIdRef = useRef(focusNodeRequestId)
   const zoomReportFrameRef = useRef<number | null>(null)
   const pendingZoomReportRef = useRef<number | null>(null)
   const [hoveredNode, setHoveredNode] = useState<string | null>(null)
@@ -242,6 +247,69 @@ function GraphCanvasComponent({
     transformRef.current = nextTransform
     setTransform(nextTransform)
   }, [zoom, zoomRequestId, width, height])
+
+  useEffect(() => {
+    if (!focusNodeId) return
+    if (handledFocusRequestIdRef.current === focusNodeRequestId) return
+
+    handledFocusRequestIdRef.current = focusNodeRequestId
+
+    const targetNode = displayGraph.nodes.find(
+      node =>
+        node.representativeId === focusNodeId ||
+        node.nodeIds.includes(focusNodeId) ||
+        node.node.name === focusNodeId ||
+        node.key === stripNodeOrientation(focusNodeId),
+    )
+    if (!targetNode || targetNode.segments.length === 0) return
+
+    let minX = Infinity
+    let maxX = -Infinity
+    let minY = Infinity
+    let maxY = -Infinity
+
+    targetNode.segments.forEach(segment => {
+      minX = Math.min(minX, segment.x)
+      maxX = Math.max(maxX, segment.x)
+      minY = Math.min(minY, segment.y)
+      maxY = Math.max(maxY, segment.y)
+    })
+
+    const nodeWidth = maxX - minX
+    const nodeHeight = maxY - minY
+    const focusWidth = Math.max(nodeWidth * 4, 80)
+    const focusHeight = Math.max(nodeHeight * 4, 80)
+    const availableWidth = Math.max(width - 160, width * 0.5)
+    const availableHeight = Math.max(height - 160, height * 0.5)
+    const focusScale = Math.min(
+      availableWidth / focusWidth,
+      availableHeight / focusHeight,
+    )
+    const nextScale = clampZoom(
+      Math.max(boundsRef.current?.fitScale ?? 0, focusScale),
+    )
+    const centerX = (minX + maxX) / 2
+    const centerY = (minY + maxY) / 2
+    const nextTransform = {
+      scale: nextScale,
+      translateX: width / 2 - centerX * nextScale,
+      translateY: height / 2 - centerY * nextScale,
+    }
+
+    transformRef.current = nextTransform
+    setTransform(nextTransform)
+    setSelectedNode(targetNode.representativeId)
+    setHoveredNode(null)
+    setHoveredEdge(null)
+    reportInternalZoom(nextScale)
+  }, [
+    displayGraph.nodes,
+    focusNodeId,
+    focusNodeRequestId,
+    height,
+    reportInternalZoom,
+    width,
+  ])
 
   // Generate path colors (same logic as in draw function)
   const getPathColor = useCallback(
@@ -1016,12 +1084,6 @@ function GraphCanvasComponent({
       const isHovered = hoveredNode === representativeId
       const isSelected = selectedNode === representativeId
 
-      ctx.strokeStyle = `rgb(${color.join(',')})`
-      ctx.lineWidth = isSelected
-        ? contigThickness + 2
-        : isHovered
-          ? contigThickness + 1
-          : contigThickness
       ctx.lineCap = 'round'
       ctx.lineJoin = 'round'
 
@@ -1034,6 +1096,15 @@ function GraphCanvasComponent({
           ctx.lineTo(p.x, p.y)
         }
       })
+
+      if (isSelected) {
+        ctx.strokeStyle = isDarkMode ? '#ffd54f' : '#b45309'
+        ctx.lineWidth = contigThickness + 8
+        ctx.stroke()
+      }
+
+      ctx.strokeStyle = `rgb(${color.join(',')})`
+      ctx.lineWidth = isHovered ? contigThickness + 1 : contigThickness
       ctx.stroke()
 
       // Draw node label if labels are enabled and node is long enough
@@ -1198,6 +1269,7 @@ function GraphCanvasComponent({
           setDraggingNodeId(hoveredNode)
           setSelectedNode(hoveredNode)
         } else {
+          setSelectedNode(null)
           // Prepare for view panning
           setIsDragging(true)
         }

@@ -90,6 +90,10 @@ function App({ worker }: AppProps) {
   const [zoom, setZoom] = useState<number>(1)
   const [zoomRequestId, setZoomRequestId] = useState(0)
   const [displayZoom, setDisplayZoom] = useState<number>(1)
+  const [nodeLocatorInput, setNodeLocatorInput] = useState('')
+  const [nodeLocatorError, setNodeLocatorError] = useState<string | null>(null)
+  const [focusNodeId, setFocusNodeId] = useState<string | null>(null)
+  const [focusNodeRequestId, setFocusNodeRequestId] = useState(0)
   const [contigThickness, setContigThickness] = useState<number>(6)
   const [connectorThickness, setConnectorThickness] = useState<number>(3)
   const [drawLabels, setDrawLabels] = useState<boolean>(false)
@@ -177,6 +181,37 @@ function App({ worker }: AppProps) {
   const handleCanvasZoomChange = useCallback((nextZoom: number) => {
     setDisplayZoom(clampZoom(nextZoom))
   }, [])
+
+  const handleLocateNode = useCallback(() => {
+    const query = nodeLocatorInput.trim()
+    if (!query) {
+      setNodeLocatorError('Enter a node ID')
+      return
+    }
+
+    if (!currentGraph || !layoutResult) {
+      setNodeLocatorError('Load and lay out a graph first')
+      return
+    }
+
+    const normalizedQuery = stripNodeOrientation(query)
+    const matchingNode =
+      currentGraph.nodes.find(
+        node => node.id === query || node.name === query,
+      ) ??
+      currentGraph.nodes.find(
+        node => stripNodeOrientation(node.id) === normalizedQuery,
+      )
+
+    if (!matchingNode) {
+      setNodeLocatorError(`Node "${query}" is not in the current graph`)
+      return
+    }
+
+    setNodeLocatorError(null)
+    setFocusNodeId(matchingNode.id)
+    setFocusNodeRequestId(currentId => currentId + 1)
+  }, [currentGraph, layoutResult, nodeLocatorInput])
 
   const handleApplyBackendUrl = useCallback(() => {
     const nextBackendUrl = normalizeBackendUrl(backendUrlInput)
@@ -770,6 +805,10 @@ function App({ worker }: AppProps) {
   )
 
   useEffect(() => {
+    setNodeLocatorInput('')
+    setNodeLocatorError(null)
+    setFocusNodeId(null)
+
     if (!currentGraph?.paths) {
       setSelectedPathNames([])
       setNodeColorOverrides({})
@@ -1202,7 +1241,43 @@ function App({ worker }: AppProps) {
             </div>
           ) : (
             <div className="visualization-section">
-              <h3>Graph Layout</h3>
+              <div className="graph-layout-header">
+                <h3>Graph Layout</h3>
+                <form
+                  className="node-locator-form"
+                  onSubmit={event => {
+                    event.preventDefault()
+                    handleLocateNode()
+                  }}
+                >
+                  <input
+                    className="control-input node-locator-input"
+                    type="search"
+                    value={nodeLocatorInput}
+                    onChange={event => {
+                      setNodeLocatorInput(event.currentTarget.value)
+                      setNodeLocatorError(null)
+                    }}
+                    placeholder="Node ID"
+                    aria-label="Node ID to locate"
+                    disabled={isComputing || !layoutResult}
+                  />
+                  <button
+                    className="node-locator-button"
+                    type="submit"
+                    disabled={
+                      isComputing || !layoutResult || !nodeLocatorInput.trim()
+                    }
+                  >
+                    Go to Node
+                  </button>
+                </form>
+              </div>
+              {nodeLocatorError && (
+                <div className="node-locator-error" role="alert">
+                  {nodeLocatorError}
+                </div>
+              )}
               {isComputing ? (
                 <div className="loading">
                   <div className="spinner"></div>
@@ -1220,6 +1295,8 @@ function App({ worker }: AppProps) {
                     zoom={zoom}
                     zoomRequestId={zoomRequestId}
                     onInternalZoomChange={handleCanvasZoomChange}
+                    focusNodeId={focusNodeId}
+                    focusNodeRequestId={focusNodeRequestId}
                     contigThickness={contigThickness}
                     connectorThickness={connectorThickness}
                     drawLabels={drawLabels}

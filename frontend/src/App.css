@@ -914,6 +914,60 @@ input[type='checkbox'] {
   font-size: 16px;
 }
 
+.graph-layout-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.visualization-section .graph-layout-header h3 {
+  margin: 0;
+  flex-shrink: 0;
+}
+
+.node-locator-form {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.node-locator-form .node-locator-input {
+  width: 220px;
+}
+
+.node-locator-button {
+  padding: 7px 11px;
+  border: 1px solid #0052a3;
+  background: #0066cc;
+  color: white;
+  cursor: pointer;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.node-locator-button:hover:not(:disabled) {
+  background: #0052a3;
+}
+
+.node-locator-button:disabled {
+  border-color: #aaa;
+  background: #ccc;
+  cursor: not-allowed;
+}
+
+.node-locator-error {
+  margin: -4px 0 10px;
+  color: #b42318;
+  font-size: 12px;
+  text-align: right;
+}
+
+.app.dark-mode .node-locator-error {
+  color: #ffb8b8;
+}
+
 canvas {
   border: 1px solid #ddd;
   background: #fff;
@@ -1110,5 +1164,14 @@ canvas {
 
   .stats-grid {
     grid-template-columns: 1fr;
+  }
+
+  .graph-layout-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .node-locator-form .node-locator-input {
+    width: 100%;
   }
 }
