@@ -121,6 +121,8 @@ export function convertGFAToGraph(
     paths.push({
       name: gfaPath.name,
       nodeIds,
+      recordType: gfaPath.recordType,
+      walk: gfaPath.walk,
     })
 
     // Mark which edges are used by this path
@@ -153,6 +155,10 @@ export function convertGFAToGraph(
     description: `Imported from GFA file with ${nodes.length} nodes and ${edges.length} links${paths.length > 0 ? ` and ${paths.length} paths` : ''}`,
     nodes,
     edges,
+    sourceRecordCounts: {
+      segments: gfaGraph.nodes.length,
+      links: gfaGraph.links.length,
+    },
     paths: paths.length > 0 ? paths : undefined,
   }
 }

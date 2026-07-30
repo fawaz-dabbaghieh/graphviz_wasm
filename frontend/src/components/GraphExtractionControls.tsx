@@ -11,6 +11,8 @@ interface GraphExtractionControlsProps {
   isLoadingGraphs: boolean
   maxNodes: string
   onMaxNodesChange: (value: string) => void
+  withCoords: boolean
+  onWithCoordsChange: (enabled: boolean) => void
   nodeStart: string
   onNodeStartChange: (value: string) => void
   onExtractNode: () => void
@@ -27,6 +29,8 @@ interface GraphExtractionControlsProps {
   onRegionStartChange: (value: string) => void
   regionEnd: string
   onRegionEndChange: (value: string) => void
+  allHaplotypes: boolean
+  onAllHaplotypesChange: (enabled: boolean) => void
   onExtractRegion: () => void
   isExtracting: boolean
 }
@@ -41,6 +45,8 @@ export function GraphExtractionControls({
   isLoadingGraphs,
   maxNodes,
   onMaxNodesChange,
+  withCoords,
+  onWithCoordsChange,
   nodeStart,
   onNodeStartChange,
   onExtractNode,
@@ -57,6 +63,8 @@ export function GraphExtractionControls({
   onRegionStartChange,
   regionEnd,
   onRegionEndChange,
+  allHaplotypes,
+  onAllHaplotypesChange,
   onExtractRegion,
   isExtracting,
 }: GraphExtractionControlsProps) {
@@ -139,8 +147,27 @@ export function GraphExtractionControls({
                 disabled={controlsDisabled}
               />
               <div className="control-hint">
-                Applies to both node and coordinate extraction. No testing cap is
-                enforced here.
+                {allHaplotypes
+                  ? 'Used for node extraction; all-haplotype region extraction ignores this value.'
+                  : 'Applies to both node and coordinate extraction. No testing cap is enforced here.'}
+              </div>
+            </div>
+
+            <div className="control-group">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={withCoords}
+                  onChange={event =>
+                    onWithCoordsChange(event.currentTarget.checked)
+                  }
+                  disabled={controlsDisabled}
+                />{' '}
+                <strong>With Coordinates</strong>
+              </label>
+              <div className="control-hint">
+                Calculate coordinate-bearing path and walk records in extracted
+                graphs.
               </div>
             </div>
 
@@ -181,6 +208,23 @@ export function GraphExtractionControls({
               }}
             >
               <h4>Coordinate Region</h4>
+              <div className="control-group">
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={allHaplotypes}
+                    onChange={event =>
+                      onAllHaplotypesChange(event.currentTarget.checked)
+                    }
+                    disabled={controlsDisabled}
+                  />{' '}
+                  <strong>All Haplotypes</strong>
+                </label>
+                <div className="control-hint">
+                  Extract exact anchor-supported path and walk spans instead of a
+                  BFS neighborhood. Max Nodes is ignored for this region request.
+                </div>
+              </div>
               <div className="control-group">
                 <label htmlFor="region-path-select">Coordinate Track</label>
                 <select
@@ -314,7 +358,11 @@ export function GraphExtractionControls({
                   (useManualRegion && !manualRegionSequence.trim())
                 }
               >
-                {isExtracting ? 'Extracting...' : 'Extract Region'}
+                {isExtracting
+                  ? 'Extracting...'
+                  : allHaplotypes
+                    ? 'Extract All Haplotypes'
+                    : 'Extract Region'}
               </button>
             </form>
           </div>

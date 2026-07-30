@@ -927,6 +927,25 @@ input[type='checkbox'] {
   flex-shrink: 0;
 }
 
+.graph-layout-title {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  min-width: 0;
+}
+
+.graph-layout-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  color: #666;
+  font-size: 13px;
+}
+
+.app.dark-mode .graph-layout-counts {
+  color: #aaa;
+}
+
 .node-locator-form {
   display: flex;
   align-items: center;
@@ -1169,6 +1188,12 @@ canvas {
   .graph-layout-header {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .graph-layout-title {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
   }
 
   .node-locator-form .node-locator-input {

@@ -29,6 +29,13 @@ function normalizeHexColorInput(color: string): string | null {
     : null
 }
 
+function formatWalkCoordinate(coordinate: string): string {
+  const numericCoordinate = Number(coordinate)
+  return coordinate !== '' && Number.isSafeInteger(numericCoordinate)
+    ? numericCoordinate.toLocaleString()
+    : coordinate || 'unknown'
+}
+
 export function PathsLegend({
   paths,
   isDarkMode = true,
@@ -62,7 +69,21 @@ export function PathsLegend({
       return paths
     }
 
-    return paths.filter(path => path.name.toLowerCase().includes(normalizedQuery))
+    return paths.filter(path => {
+      const searchableValues = [
+        path.name,
+        path.walk?.sampleName,
+        path.walk?.haplotypeIndex,
+        path.walk?.sequenceName,
+        path.walk?.sequenceStart,
+        path.walk?.sequenceEnd,
+        ...(path.walk?.tags ?? []),
+      ]
+
+      return searchableValues.some(value =>
+        value?.toLowerCase().includes(normalizedQuery),
+      )
+    })
   }, [paths, searchQuery])
 
   const applyNodeColor = (pathName: string, color: string) => {
@@ -288,6 +309,41 @@ export function PathsLegend({
                 Color
               </button>
             </label>
+            {path.walk && (
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  columnGap: '10px',
+                  rowGap: '4px',
+                  paddingLeft: '22px',
+                  color: isDarkMode ? '#aaa' : '#666',
+                  fontSize: '11px',
+                  flexWrap: 'wrap',
+                }}
+              >
+                <strong style={{ color: isDarkMode ? '#ddd' : '#444' }}>
+                  W
+                </strong>
+                <span>Sample: {path.walk.sampleName}</span>
+                <span>Haplotype: {path.walk.haplotypeIndex}</span>
+                <span>Sequence: {path.walk.sequenceName}</span>
+                <span>
+                  Coordinates:{' '}
+                  {formatWalkCoordinate(path.walk.sequenceStart)}
+                  {' - '}
+                  {formatWalkCoordinate(path.walk.sequenceEnd)}
+                </span>
+                {path.walk.tags.length > 0 && (
+                  <span
+                    title={path.walk.tags.join('\t')}
+                    style={{ overflowWrap: 'anywhere' }}
+                  >
+                    Tags: {path.walk.tags.join(', ')}
+                  </span>
+                )}
+              </div>
+            )}
             {activeColorPathName === path.name && (
               <div
               style={{

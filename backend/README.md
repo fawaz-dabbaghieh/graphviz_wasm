@@ -89,13 +89,15 @@ backend/gfaidx_bin/gfaidx get_subgraph \
   backend/indexed_example/chr22.indexed.gfa.gz \
   START_NODE \
   TMP_OUTPUT.gfa \
-  --max_nodes MAX_NODES
+  --max_nodes MAX_NODES \
+  [--with_coords]
 ```
 
 The API reads `TMP_OUTPUT.gfa`, returns its GFA text to the browser, and deletes
 the temporary file automatically. Requests are currently limited to the
 registered graphs. `max_nodes` is still required and must be at least 1, but it
 is not capped by the backend while we are testing larger graph sizes locally.
+Set `with_coords` to `true` to request coordinate-bearing P/W subpaths.
 
 For coordinate-region extraction, the frontend first calls:
 
@@ -118,7 +120,13 @@ track, start, end, and max-node limit. The backend runs a command equivalent to:
 backend/gfaidx_bin/gfaidx get_region \
   --reference REFERENCE \
   --max_nodes MAX_NODES \
+  [--with_coords] \
   backend/indexed_example/chr22.indexed.gfa.gz \
   SEQUENCE:START-END \
   TMP_OUTPUT.gfa
 ```
+
+Set `all_haplotypes` to `true` to replace the BFS limit with
+`--all_haplotypes`. In that mode the backend omits `--max_nodes`; `max_nodes`
+may therefore be omitted from the API request. `with_coords` can be enabled in
+either region mode.

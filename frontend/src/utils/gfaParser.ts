@@ -27,6 +27,17 @@ export interface GFAPath {
   name: string
   path: string
   rest: string[]
+  recordType: 'P' | 'W'
+  walk?: GFAWalkMetadata
+}
+
+export interface GFAWalkMetadata {
+  sampleName: string
+  haplotypeIndex: string
+  sequenceName: string
+  sequenceStart: string
+  sequenceEnd: string
+  tags: string[]
 }
 
 export interface GFAGraph {
@@ -119,15 +130,21 @@ export function parseGFA(file: string): GFAGraph {
       // into the app's oriented node ids.
       const [, name, path, ...rest] = line.split('\t')
 
-      graph.paths.push({ name, path, rest })
+      graph.paths.push({ name, path, rest, recordType: 'P' })
     } else if (line.startsWith('W')) {
-      const [, sampleName, haplotypeIndex, sequenceName, , , walk, ...rest] =
-        line.split('\t')
+      const [
+        ,
+        sampleName,
+        haplotypeIndex,
+        sequenceName,
+        sequenceStart,
+        sequenceEnd,
+        walk,
+        ...rest
+      ] = line.split('\t')
 
-      // Minimal W-line support: we currently use sample/haplotype/sequence to
-      // build a stable display name and parse the oriented walk itself. The
-      // other W fields (coordinates and tags) are intentionally ignored for
-      // now so we can add richer W metadata handling later.
+      // Use sample/haplotype/sequence for stable selection identity while
+      // preserving every W metadata field separately for richer display.
       const baseName = [sampleName, haplotypeIndex, sequenceName]
         .filter(Boolean)
         .join('#')
@@ -141,7 +158,20 @@ export function parseGFA(file: string): GFAGraph {
           `${nodeName}${orientation === '>' ? '+' : '-'}`,
       ).join(',')
 
-      graph.paths.push({ name, path, rest })
+      graph.paths.push({
+        name,
+        path,
+        rest,
+        recordType: 'W',
+        walk: {
+          sampleName,
+          haplotypeIndex,
+          sequenceName,
+          sequenceStart,
+          sequenceEnd,
+          tags: rest,
+        },
+      })
     }
   }
   return graph

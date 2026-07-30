@@ -117,6 +117,8 @@ function App({ worker }: AppProps) {
   const [regionPathError, setRegionPathError] = useState<string | null>(null)
   const [subgraphStartNode, setSubgraphStartNode] = useState('')
   const [extractionMaxNodes, setExtractionMaxNodes] = useState('200')
+  const [extractionWithCoords, setExtractionWithCoords] = useState(false)
+  const [extractAllHaplotypes, setExtractAllHaplotypes] = useState(false)
   const [manualRegionReference, setManualRegionReference] = useState('')
   const [manualRegionSequence, setManualRegionSequence] = useState('')
   const [regionStart, setRegionStart] = useState('')
@@ -624,6 +626,7 @@ function App({ worker }: AppProps) {
           graph_id: selectedIndexedGraph,
           start_node: startNode,
           max_nodes: maxNodes,
+          with_coords: extractionWithCoords,
         }),
       })
 
@@ -633,9 +636,10 @@ function App({ worker }: AppProps) {
       }
 
       const gfaText = await response.text()
+      const coordinateSuffix = extractionWithCoords ? '_with_coords' : ''
       loadGFAFromText(
         gfaText,
-        `${selectedIndexedGraph}_${startNode}_${maxNodes}_nodes.gfa`,
+        `${selectedIndexedGraph}_${startNode}_${maxNodes}_nodes${coordinateSuffix}.gfa`,
         'backend-extraction',
       )
     } catch (error) {
@@ -648,6 +652,7 @@ function App({ worker }: AppProps) {
   }, [
     backendUrl,
     extractionMaxNodes,
+    extractionWithCoords,
     loadGFAFromText,
     selectedGraphSupportsExtraction,
     selectedIndexedGraph,
@@ -690,7 +695,10 @@ function App({ worker }: AppProps) {
       return
     }
 
-    if (!Number.isInteger(maxNodes) || maxNodes < 1) {
+    if (
+      !extractAllHaplotypes &&
+      (!Number.isInteger(maxNodes) || maxNodes < 1)
+    ) {
       setLoadError('Neighborhood size must be a positive integer')
       return
     }
@@ -710,7 +718,9 @@ function App({ worker }: AppProps) {
           sequence,
           start,
           end,
-          max_nodes: maxNodes,
+          max_nodes: extractAllHaplotypes ? undefined : maxNodes,
+          with_coords: extractionWithCoords,
+          all_haplotypes: extractAllHaplotypes,
         }),
       })
 
@@ -723,9 +733,11 @@ function App({ worker }: AppProps) {
       const referencePrefix = reference
         ? `${reference}_`
         : ''
+      const modeSuffix = extractAllHaplotypes ? '_all_haplotypes' : ''
+      const coordinateSuffix = extractionWithCoords ? '_with_coords' : ''
       loadGFAFromText(
         gfaText,
-        `${selectedIndexedGraph}_${referencePrefix}${sequence}_${start}_${end}.gfa`,
+        `${selectedIndexedGraph}_${referencePrefix}${sequence}_${start}_${end}${modeSuffix}${coordinateSuffix}.gfa`,
         'backend-extraction',
       )
     } catch (error) {
@@ -737,7 +749,9 @@ function App({ worker }: AppProps) {
     }
   }, [
     backendUrl,
+    extractAllHaplotypes,
     extractionMaxNodes,
+    extractionWithCoords,
     loadGFAFromText,
     manualRegionReference,
     manualRegionSequence,
@@ -1157,6 +1171,8 @@ function App({ worker }: AppProps) {
             isLoadingGraphs={isLoadingIndexedGraphs}
             maxNodes={extractionMaxNodes}
             onMaxNodesChange={setExtractionMaxNodes}
+            withCoords={extractionWithCoords}
+            onWithCoordsChange={setExtractionWithCoords}
             nodeStart={subgraphStartNode}
             onNodeStartChange={setSubgraphStartNode}
             onExtractNode={handleExtractSubgraph}
@@ -1173,6 +1189,8 @@ function App({ worker }: AppProps) {
             onRegionStartChange={setRegionStart}
             regionEnd={regionEnd}
             onRegionEndChange={setRegionEnd}
+            allHaplotypes={extractAllHaplotypes}
+            onAllHaplotypesChange={setExtractAllHaplotypes}
             onExtractRegion={handleExtractRegion}
             isExtracting={isExtractingSubgraph}
           />
@@ -1242,7 +1260,21 @@ function App({ worker }: AppProps) {
           ) : (
             <div className="visualization-section">
               <div className="graph-layout-header">
-                <h3>Graph Layout</h3>
+                <div className="graph-layout-title">
+                  <h3>Graph Layout</h3>
+                  {currentGraph?.sourceRecordCounts && (
+                    <div className="graph-layout-counts">
+                      <span>
+                        Number of Nodes:{' '}
+                        {currentGraph.sourceRecordCounts.segments.toLocaleString()}
+                      </span>
+                      <span>
+                        Number of Edges:{' '}
+                        {currentGraph.sourceRecordCounts.links.toLocaleString()}
+                      </span>
+                    </div>
+                  )}
+                </div>
                 <form
                   className="node-locator-form"
                   onSubmit={event => {
