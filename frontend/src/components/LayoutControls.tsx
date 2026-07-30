@@ -198,10 +198,10 @@ export function LayoutControls({
                   onChange={e => onDrawPathsChange(e.target.checked)}
                   disabled={isComputing || !hasPathsInGraph}
                 />{' '}
-                Draw Paths{!hasPathsInGraph && ' (no paths present)'}
+                List Paths{!hasPathsInGraph && ' (no paths present)'}
               </label>
               <div className="control-hint">
-                Show multiple colored lines for paths
+                Show the path list. Select paths there to draw overlays.
               </div>
             </div>
           </div>

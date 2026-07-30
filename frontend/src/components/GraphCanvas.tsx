@@ -32,6 +32,8 @@ interface GraphCanvasProps {
   zoom?: number
   zoomRequestId?: number
   onInternalZoomChange?: (zoom: number) => void
+  focusNodeId?: string | null
+  focusNodeRequestId?: number
   contigThickness?: number
   connectorThickness?: number
   drawLabels?: boolean
@@ -40,12 +42,36 @@ interface GraphCanvasProps {
   // The selector hands the canvas the exact set of path IDs that should remain
   // visible without changing the underlying graph model.
   visiblePathIds?: Set<string>
+  nodeColorOverrides?: Record<string, string>
+  onUseAsStartNode?: (nodeId: string) => void
   debugHitboxes?: boolean // Hidden flag to visualize edge hit areas
 }
 
 const SEQUENCE_PREVIEW_CUTOFF = 100
 const SEQUENCE_PREVIEW_PREFIX_LENGTH = Math.ceil(SEQUENCE_PREVIEW_CUTOFF / 2)
 const SEQUENCE_PREVIEW_SUFFIX_LENGTH = Math.floor(SEQUENCE_PREVIEW_CUTOFF / 2)
+// Wheel devices report very different delta sizes, so cap each rotation update
+// while retaining small trackpad deltas for continuous motion.
+const ROTATION_RADIANS_PER_PIXEL = 0.002
+const MAX_ROTATION_STEP = Math.PI / 15
+
+// Keep accumulated angles bounded so trigonometric calculations remain stable
+// after long rotation sessions.
+function normalizeRotation(rotation: number): number {
+  return Math.atan2(Math.sin(rotation), Math.cos(rotation))
+}
+
+// Normalize line/page wheel units to approximate CSS pixels before converting
+// the movement to radians.
+function getWheelDeltaPixels(event: WheelEvent, pageHeight: number): number {
+  if (event.deltaMode === WheelEvent.DOM_DELTA_LINE) {
+    return event.deltaY * 16
+  }
+  if (event.deltaMode === WheelEvent.DOM_DELTA_PAGE) {
+    return event.deltaY * pageHeight
+  }
+  return event.deltaY
+}
 
 function getNodeSequence(node: GraphNode): string | null {
   if (!node.sequence || node.sequence === '*') return null
@@ -72,26 +98,33 @@ function GraphCanvasComponent({
   zoom,
   zoomRequestId = 0,
   onInternalZoomChange,
+  focusNodeId,
+  focusNodeRequestId = 0,
   contigThickness = 6,
   connectorThickness = 3,
   drawLabels = true,
   labelLengthThreshold = 0,
   drawPaths = true,
   visiblePathIds,
+  nodeColorOverrides,
+  onUseAsStartNode,
   debugHitboxes = false,
 }: GraphCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [transform, setTransform] = useState<Transform>({
     scale: 1,
+    rotation: 0,
     translateX: 0,
     translateY: 0,
   })
   const transformRef = useRef<Transform>({
     scale: 1,
+    rotation: 0,
     translateX: 0,
     translateY: 0,
   })
   const handledZoomRequestIdRef = useRef(zoomRequestId)
+  const handledFocusRequestIdRef = useRef(focusNodeRequestId)
   const zoomReportFrameRef = useRef<number | null>(null)
   const pendingZoomReportRef = useRef<number | null>(null)
   const [hoveredNode, setHoveredNode] = useState<string | null>(null)
@@ -200,6 +233,8 @@ function GraphCanvasComponent({
 
     const nextTransform = {
       scale: fitScale,
+      // A newly computed layout starts in its original OGDF orientation.
+      rotation: 0,
       translateX: offsetX,
       translateY: offsetY,
     }
@@ -230,6 +265,8 @@ function GraphCanvasComponent({
     const centerY = height / 2
 
     const nextTransform = {
+      // Slider zoom changes only scale/translation and preserves rotation.
+      ...prev,
       scale: zoom,
       translateX: centerX - (centerX - prev.translateX) * scaleFactor,
       translateY: centerY - (centerY - prev.translateY) * scaleFactor,
@@ -238,6 +275,87 @@ function GraphCanvasComponent({
     transformRef.current = nextTransform
     setTransform(nextTransform)
   }, [zoom, zoomRequestId, width, height])
+
+  useEffect(() => {
+    if (!focusNodeId) return
+    if (handledFocusRequestIdRef.current === focusNodeRequestId) return
+
+    handledFocusRequestIdRef.current = focusNodeRequestId
+
+    const targetNode = displayGraph.nodes.find(
+      node =>
+        node.representativeId === focusNodeId ||
+        node.nodeIds.includes(focusNodeId) ||
+        node.node.name === focusNodeId ||
+        node.key === stripNodeOrientation(focusNodeId),
+    )
+    if (!targetNode || targetNode.segments.length === 0) return
+
+    let minX = Infinity
+    let maxX = -Infinity
+    let minY = Infinity
+    let maxY = -Infinity
+
+    targetNode.segments.forEach(segment => {
+      minX = Math.min(minX, segment.x)
+      maxX = Math.max(maxX, segment.x)
+      minY = Math.min(minY, segment.y)
+      maxY = Math.max(maxY, segment.y)
+    })
+
+    const nodeWidth = maxX - minX
+    const nodeHeight = maxY - minY
+    const rotation = transformRef.current.rotation
+    const rotationCosine = Math.cos(rotation)
+    const rotationSine = Math.sin(rotation)
+    // Project the node's bounding box through the current rotation so focus
+    // scaling leaves similar surrounding context at every angle.
+    const rotatedNodeWidth =
+      Math.abs(nodeWidth * rotationCosine) +
+      Math.abs(nodeHeight * rotationSine)
+    const rotatedNodeHeight =
+      Math.abs(nodeWidth * rotationSine) +
+      Math.abs(nodeHeight * rotationCosine)
+    const focusWidth = Math.max(rotatedNodeWidth * 4, 80)
+    const focusHeight = Math.max(rotatedNodeHeight * 4, 80)
+    const availableWidth = Math.max(width - 160, width * 0.5)
+    const availableHeight = Math.max(height - 160, height * 0.5)
+    const focusScale = Math.min(
+      availableWidth / focusWidth,
+      availableHeight / focusHeight,
+    )
+    const nextScale = clampZoom(
+      Math.max(boundsRef.current?.fitScale ?? 0, focusScale),
+    )
+    const centerX = (minX + maxX) / 2
+    const centerY = (minY + maxY) / 2
+    // Rotate the graph-space node center before solving the translation that
+    // places it at the center of the canvas.
+    const rotatedCenterX =
+      (centerX * rotationCosine - centerY * rotationSine) * nextScale
+    const rotatedCenterY =
+      (centerX * rotationSine + centerY * rotationCosine) * nextScale
+    const nextTransform = {
+      scale: nextScale,
+      rotation,
+      translateX: width / 2 - rotatedCenterX,
+      translateY: height / 2 - rotatedCenterY,
+    }
+
+    transformRef.current = nextTransform
+    setTransform(nextTransform)
+    setSelectedNode(targetNode.representativeId)
+    setHoveredNode(null)
+    setHoveredEdge(null)
+    reportInternalZoom(nextScale)
+  }, [
+    displayGraph.nodes,
+    focusNodeId,
+    focusNodeRequestId,
+    height,
+    reportInternalZoom,
+    width,
+  ])
 
   // Generate path colors (same logic as in draw function)
   const getPathColor = useCallback(
@@ -272,9 +390,38 @@ function GraphCanvasComponent({
     [drawPaths, visiblePathIds],
   )
 
-  // Color computation based on scheme
-  const getNodeColor = useCallback(
-    (node: GraphNode): [number, number, number] => {
+  // Colors depend on graph data and user settings, not the viewport. Cache
+  // them so wheel/pan redraws only perform a map lookup per visible node.
+  const nodeColorsById = useMemo(() => {
+    const colors = new Map<string, [number, number, number]>()
+    let minDepth = Infinity
+    let maxDepth = -Infinity
+
+    if (colorScheme === 'depth') {
+      graph.nodes.forEach(node => {
+        if (!Number.isFinite(node.depth)) return
+        minDepth = Math.min(minDepth, node.depth)
+        maxDepth = Math.max(maxDepth, node.depth)
+      })
+    }
+
+    const computeNodeColor = (
+      node: GraphNode,
+    ): [number, number, number] => {
+      const overrideColor = nodeColorOverrides?.[node.id]
+      if (overrideColor) {
+        const normalizedColor = overrideColor.replace(/^#/, '')
+        const parsedColor = Number.parseInt(normalizedColor, 16)
+
+        if (normalizedColor.length === 6 && Number.isFinite(parsedColor)) {
+          return [
+            (parsedColor >> 16) & 255,
+            (parsedColor >> 8) & 255,
+            parsedColor & 255,
+          ]
+        }
+      }
+
       switch (colorScheme) {
         case 'uniform':
           // Bandage default: rgb(178, 34, 34) - firebrick red
@@ -330,11 +477,8 @@ function GraphCanvasComponent({
 
         case 'depth': {
           // Color based on depth - use viridis-like color map
-          const allDepths = graph.nodes.map(n => n.depth)
-          const minDepth = Math.min(...allDepths)
-          const maxDepth = Math.max(...allDepths)
           const normalizedDepth =
-            maxDepth > minDepth
+            Number.isFinite(node.depth) && maxDepth > minDepth
               ? (node.depth - minDepth) / (maxDepth - minDepth)
               : 0.5
 
@@ -378,8 +522,19 @@ function GraphCanvasComponent({
         default:
           return [52, 152, 219]
       }
-    },
-    [colorScheme, isDarkMode, graph],
+    }
+
+    graph.nodes.forEach(node => {
+      colors.set(node.id, computeNodeColor(node))
+    })
+
+    return colors
+  }, [colorScheme, graph.nodes, nodeColorOverrides])
+
+  const getNodeColor = useCallback(
+    (node: GraphNode): [number, number, number] =>
+      nodeColorsById.get(node.id) ?? [52, 152, 219],
+    [nodeColorsById],
   )
 
   const getDisplayNodeSegments = useCallback(
@@ -595,13 +750,28 @@ function GraphCanvasComponent({
     ctx.fillStyle = isDarkMode ? '#1a1a1a' : '#ffffff'
     ctx.fillRect(0, 0, width, height)
 
-    const { scale, translateX, translateY } = transform
+    const { scale, rotation, translateX, translateY } = transform
+    // Cache the trigonometric values once per redraw instead of recomputing
+    // them for every node segment and edge control point.
+    const rotationCosine = Math.cos(rotation)
+    const rotationSine = Math.sin(rotation)
 
-    // Helper to transform coordinates
-    const transformPoint = (x: number, y: number) => ({
-      x: x * scale + translateX,
-      y: y * scale + translateY,
-    })
+    // Apply uniform scale, viewport rotation, and screen translation to each
+    // graph-space point.
+    const transformPoint = (x: number, y: number) => {
+      const scaledX = x * scale
+      const scaledY = y * scale
+      return {
+        x:
+          scaledX * rotationCosine -
+          scaledY * rotationSine +
+          translateX,
+        y:
+          scaledX * rotationSine +
+          scaledY * rotationCosine +
+          translateY,
+      }
+    }
 
     // Helper function to draw an arrowhead at a point
     const drawArrowhead = (
@@ -975,12 +1145,6 @@ function GraphCanvasComponent({
       const isHovered = hoveredNode === representativeId
       const isSelected = selectedNode === representativeId
 
-      ctx.strokeStyle = `rgb(${color.join(',')})`
-      ctx.lineWidth = isSelected
-        ? contigThickness + 2
-        : isHovered
-          ? contigThickness + 1
-          : contigThickness
       ctx.lineCap = 'round'
       ctx.lineJoin = 'round'
 
@@ -993,6 +1157,15 @@ function GraphCanvasComponent({
           ctx.lineTo(p.x, p.y)
         }
       })
+
+      if (isSelected) {
+        ctx.strokeStyle = isDarkMode ? '#ffd54f' : '#b45309'
+        ctx.lineWidth = contigThickness + 8
+        ctx.stroke()
+      }
+
+      ctx.strokeStyle = `rgb(${color.join(',')})`
+      ctx.lineWidth = isHovered ? contigThickness + 1 : contigThickness
       ctx.stroke()
 
       // Draw node label if labels are enabled and node is long enough
@@ -1052,6 +1225,51 @@ function GraphCanvasComponent({
       e.preventDefault()
       e.stopPropagation()
 
+      const prev = transformRef.current
+
+      if (e.altKey) {
+        // Alt+wheel rotates around the canvas center, keeping the view stable
+        // instead of orbiting around a changing pointer location.
+        const wheelDeltaPixels = getWheelDeltaPixels(e, height)
+        const rotationDelta = Math.max(
+          -MAX_ROTATION_STEP,
+          Math.min(
+            MAX_ROTATION_STEP,
+            wheelDeltaPixels * ROTATION_RADIANS_PER_PIXEL,
+          ),
+        )
+        if (Math.abs(rotationDelta) < 0.0001) return
+
+        const pivotX = width / 2
+        const pivotY = height / 2
+        const deltaCosine = Math.cos(rotationDelta)
+        const deltaSine = Math.sin(rotationDelta)
+        const translationFromPivotX = prev.translateX - pivotX
+        const translationFromPivotY = prev.translateY - pivotY
+        const nextTransform = {
+          ...prev,
+          rotation: normalizeRotation(prev.rotation + rotationDelta),
+          // Rotate the existing screen translation around the same pivot so
+          // graph content does not jump while the angle changes.
+          translateX:
+            pivotX +
+            translationFromPivotX * deltaCosine -
+            translationFromPivotY * deltaSine,
+          translateY:
+            pivotY +
+            translationFromPivotX * deltaSine +
+            translationFromPivotY * deltaCosine,
+        }
+
+        transformRef.current = nextTransform
+        setTransform(nextTransform)
+        // Hover geometry moves during rotation, so discard stale tooltips
+        // until the pointer moves and hit-testing runs again.
+        setHoveredNode(null)
+        setHoveredEdge(null)
+        return
+      }
+
       const rect = canvas.getBoundingClientRect()
       const mouseX = e.clientX - rect.left
       const mouseY = e.clientY - rect.top
@@ -1059,13 +1277,14 @@ function GraphCanvasComponent({
       const delta = -e.deltaY * 0.001
       const scaleFactor = Math.exp(delta)
 
-      const prev = transformRef.current
       const newScale = clampZoom(prev.scale * scaleFactor)
       if (Math.abs(newScale - prev.scale) < 0.0001) return
 
       const actualFactor = newScale / prev.scale
 
       const nextTransform = {
+        // Ordinary wheel zoom keeps the current viewport rotation.
+        ...prev,
         scale: newScale,
         translateX: mouseX - (mouseX - prev.translateX) * actualFactor,
         translateY: mouseY - (mouseY - prev.translateY) * actualFactor,
@@ -1078,7 +1297,7 @@ function GraphCanvasComponent({
 
     canvas.addEventListener('wheel', wheelHandler, { passive: false })
     return () => canvas.removeEventListener('wheel', wheelHandler)
-  }, [reportInternalZoom])
+  }, [height, reportInternalZoom, width])
 
   // Hit detection helper - distance from point to line segment
   const distanceToSegment = (
@@ -1157,6 +1376,7 @@ function GraphCanvasComponent({
           setDraggingNodeId(hoveredNode)
           setSelectedNode(hoveredNode)
         } else {
+          setSelectedNode(null)
           // Prepare for view panning
           setIsDragging(true)
         }
@@ -1184,9 +1404,20 @@ function GraphCanvasComponent({
           }
         }
 
-        // Calculate delta in graph coordinates
-        const dx = (e.clientX - dragStart.x) / transform.scale
-        const dy = (e.clientY - dragStart.y) / transform.scale
+        const screenDeltaX = e.clientX - dragStart.x
+        const screenDeltaY = e.clientY - dragStart.y
+        const inverseRotationCosine = Math.cos(transform.rotation)
+        const inverseRotationSine = Math.sin(transform.rotation)
+        // Undo viewport rotation and scale so dragging follows the pointer in
+        // graph coordinates at every displayed angle.
+        const dx =
+          (screenDeltaX * inverseRotationCosine +
+            screenDeltaY * inverseRotationSine) /
+          transform.scale
+        const dy =
+          (-screenDeltaX * inverseRotationSine +
+            screenDeltaY * inverseRotationCosine) /
+          transform.scale
 
         setModifiedNodePositions(prev => {
           const current = prev || layoutResult.nodePositions
@@ -1224,11 +1455,21 @@ function GraphCanvasComponent({
         setDragStart({ x: e.clientX, y: e.clientY })
       } else {
         // Hit detection for hover
-        const { scale, translateX, translateY } = transform
-
-        // Inverse transform to get graph coordinates
-        const graphX = (mouseX - translateX) / scale
-        const graphY = (mouseY - translateY) / scale
+        const { scale, rotation, translateX, translateY } = transform
+        const translatedMouseX = mouseX - translateX
+        const translatedMouseY = mouseY - translateY
+        const inverseRotationCosine = Math.cos(rotation)
+        const inverseRotationSine = Math.sin(rotation)
+        // Invert translation, rotation, and scale so hover hit-testing remains
+        // aligned with the rotated graph.
+        const graphX =
+          (translatedMouseX * inverseRotationCosine +
+            translatedMouseY * inverseRotationSine) /
+          scale
+        const graphY =
+          (-translatedMouseX * inverseRotationSine +
+            translatedMouseY * inverseRotationCosine) /
+          scale
 
         // Check nodes
         let foundNode: string | null = null
@@ -1554,6 +1795,48 @@ function GraphCanvasComponent({
           >
             View Details
           </button>
+          {onUseAsStartNode && (
+            <button
+              onClick={e => {
+                e.stopPropagation()
+                const node = graph.nodes.find(
+                  candidate => candidate.id === contextMenu.nodeId,
+                )
+                if (node) {
+                  onUseAsStartNode(node.name)
+                }
+                setContextMenu({
+                  visible: false,
+                  x: 0,
+                  y: 0,
+                  nodeId: null,
+                })
+              }}
+              style={{
+                width: '100%',
+                padding: '8px 12px',
+                background: 'transparent',
+                border: 'none',
+                borderTop: isDarkMode
+                  ? '1px solid #444'
+                  : '1px solid #ddd',
+                textAlign: 'left',
+                cursor: 'pointer',
+                fontSize: '13px',
+                color: isDarkMode ? '#e0e0e0' : '#333',
+              }}
+              onMouseEnter={e => {
+                e.currentTarget.style.background = isDarkMode
+                  ? '#3a3a3a'
+                  : '#f0f0f0'
+              }}
+              onMouseLeave={e => {
+                e.currentTarget.style.background = 'transparent'
+              }}
+            >
+              Use as Start Node
+            </button>
+          )}
         </div>
       )}
 
@@ -1713,19 +1996,19 @@ function GraphCanvasComponent({
           const toNode = displayGraph.nodesByKey.get(edge.toNodeKey)?.node
           if (!fromNode || !toNode) return null
 
-          const visiblePathTraversals = drawPaths
-            ? getVisiblePathTraversals(edge.pathTraversals)
-            : edge.pathTraversals
-          const visibleEdgePathIds = Array.from(
-            new Set(visiblePathTraversals.map(traversal => traversal.pathId)),
+          const visiblePathTraversals = getVisiblePathTraversals(
+            edge.pathTraversals,
           )
+          const visibleEdgePathIdSet = new Set(
+            visiblePathTraversals.map(traversal => traversal.pathId),
+          )
+          const visibleEdgePathIds = Array.from(visibleEdgePathIdSet)
 
           // Path overlays are directional even though the base graph edge is
-          // drawn as one collapsed connection. Group tooltip entries by the
-          // exact oriented traversal so users can see which paths go through
-          // e.g. "53728108+ -> 53728106-" versus the opposite orientation.
+          // drawn as one collapsed connection. Always group every traversal
+          // for the tooltip; path visibility affects only the status/count.
           const pathDirectionGroups = Array.from(
-            visiblePathTraversals.reduce(
+            edge.pathTraversals.reduce(
               (groups, traversal) => {
                 const directionKey = `${traversal.edge.from}->${traversal.edge.to}`
                 const existingGroup = groups.get(directionKey)
@@ -1791,11 +2074,8 @@ function GraphCanvasComponent({
                   >
                     <div style={{ marginBottom: '3px', opacity: 0.9 }}>
                       <strong>
-                        Paths ({visibleEdgePathIds.length}
-                        {visibleEdgePathIds.length !== edge.pathIds.length
-                          ? ` visible / ${edge.pathIds.length} total`
-                          : ''}
-                        ):
+                        Paths ({visibleEdgePathIds.length} visible /{' '}
+                        {edge.pathIds.length} total):
                       </strong>
                     </div>
                     {pathDirectionGroups.map(group => (
@@ -1816,7 +2096,9 @@ function GraphCanvasComponent({
                               alignItems: 'center',
                               gap: '6px',
                               marginLeft: '18px',
-                              opacity: 0.8,
+                              opacity: visibleEdgePathIdSet.has(pathId)
+                                ? 0.9
+                                : 0.55,
                             }}
                           >
                             <div

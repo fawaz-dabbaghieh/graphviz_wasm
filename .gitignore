@@ -6,6 +6,8 @@ yarn-debug.log*
 yarn-error.log*
 lerna-debug.log*
 
+gfaidx
+
 # Python backend caches
 __pycache__/
 *.py[cod]

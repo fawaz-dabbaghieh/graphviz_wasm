@@ -44,7 +44,42 @@ load the server-side graph registry, then calls `POST /api/extract-subgraph` or
 against registered indexed graphs and returns the extracted GFA to the
 visualizer.
 
-### Required Packages
+### Quick Conda Test
+
+Create and activate the test environment:
+
+```bash
+conda env create -f environment.yml
+conda activate graphviz-wasm
+```
+
+Start both the backend and frontend from the repository root:
+
+```bash
+./run_dev.sh
+```
+
+Open the frontend URL printed by Vite, usually:
+
+```text
+http://127.0.0.1:5173
+```
+
+The script uses `gfaidx` from the active Conda environment and sets the
+frontend backend URL to `http://127.0.0.1:8000`.
+
+To test from another device on the same network:
+
+```bash
+BACKEND_HOST=0.0.0.0 FRONTEND_HOST=0.0.0.0 ./run_dev.sh
+```
+
+Then open `http://YOUR_LAPTOP_IP:5173` on the other device and set the in-app
+Backend field to `http://YOUR_LAPTOP_IP:8000`.
+
+### Manual Setup
+
+If you do not want to use `environment.yml`, install packages manually.
 
 Inside your Conda environment, install Python and Node tooling:
 

@@ -5,10 +5,12 @@ import { LayoutControls } from './components/LayoutControls'
 import { PathsLegend } from './components/PathsLegend'
 import { StatsPanel } from './components/StatsPanel'
 import { GraphExtractionControls } from './components/GraphExtractionControls'
+import { BedAnnotationPanel } from './components/BedAnnotationPanel'
 import { urlExamples } from './data/urlExamples'
 import { BandageLayoutWorker } from './utils/BandageLayoutWorker'
 import { parseGFA } from './utils/gfaParser'
 import { convertGFAToGraph } from './utils/gfaConverter'
+import { stripNodeOrientation } from './utils/displayGraph'
 import { clampZoom } from './utils/zoom'
 import type {
   LayoutOptions,
@@ -16,7 +18,9 @@ import type {
   ColorScheme,
   Graph,
   IndexedGraph,
+  IndexedAnnotation,
   RegionPath,
+  BedAnnotation,
 } from './types'
 import './App.css'
 
@@ -39,6 +43,20 @@ async function readBackendError(response: Response): Promise<string> {
 
   return response.text()
 }
+
+function getDefaultBackendUrl(): string {
+  return (
+    localStorage.getItem('backendUrl') ||
+    import.meta.env.VITE_BACKEND_URL ||
+    'http://localhost:8000'
+  )
+}
+
+function normalizeBackendUrl(url: string): string {
+  return url.trim().replace(/\/+$/, '')
+}
+
+const LOCAL_GRAPH_ID_PREFIX = '__local_graph__:'
 
 function App({ worker }: AppProps) {
   const [layoutOptions, setLayoutOptions] = useState<LayoutOptions>({
@@ -72,6 +90,10 @@ function App({ worker }: AppProps) {
   const [zoom, setZoom] = useState<number>(1)
   const [zoomRequestId, setZoomRequestId] = useState(0)
   const [displayZoom, setDisplayZoom] = useState<number>(1)
+  const [nodeLocatorInput, setNodeLocatorInput] = useState('')
+  const [nodeLocatorError, setNodeLocatorError] = useState<string | null>(null)
+  const [focusNodeId, setFocusNodeId] = useState<string | null>(null)
+  const [focusNodeRequestId, setFocusNodeRequestId] = useState(0)
   const [contigThickness, setContigThickness] = useState<number>(6)
   const [connectorThickness, setConnectorThickness] = useState<number>(3)
   const [drawLabels, setDrawLabels] = useState<boolean>(false)
@@ -80,8 +102,13 @@ function App({ worker }: AppProps) {
   // Keep path visibility in the React layer so toggling paths never requires
   // recomputing the layout itself.
   const [selectedPathNames, setSelectedPathNames] = useState<string[]>([])
+  const [nodeColorOverrides, setNodeColorOverrides] = useState<
+    Record<string, string>
+  >({})
   const [indexedGraphs, setIndexedGraphs] = useState<IndexedGraph[]>([])
   const [selectedIndexedGraph, setSelectedIndexedGraph] = useState('')
+  const [localGraphOption, setLocalGraphOption] =
+    useState<IndexedGraph | null>(null)
   const [isLoadingIndexedGraphs, setIsLoadingIndexedGraphs] = useState(false)
   const [indexedGraphError, setIndexedGraphError] = useState<string | null>(null)
   const [regionPaths, setRegionPaths] = useState<RegionPath[]>([])
@@ -90,13 +117,45 @@ function App({ worker }: AppProps) {
   const [regionPathError, setRegionPathError] = useState<string | null>(null)
   const [subgraphStartNode, setSubgraphStartNode] = useState('')
   const [extractionMaxNodes, setExtractionMaxNodes] = useState('200')
+  const [manualRegionReference, setManualRegionReference] = useState('')
+  const [manualRegionSequence, setManualRegionSequence] = useState('')
   const [regionStart, setRegionStart] = useState('')
   const [regionEnd, setRegionEnd] = useState('')
   const [isExtractingSubgraph, setIsExtractingSubgraph] = useState(false)
-  const backendUrl = useMemo(
-    () => import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:8000',
-    [],
+  const [rightPanelView, setRightPanelView] = useState<
+    'graph' | 'annotations'
+  >('graph')
+  const [bedAnnotations, setBedAnnotations] = useState<BedAnnotation[]>([])
+  const [selectedBedAnnotation, setSelectedBedAnnotation] =
+    useState<BedAnnotation | null>(null)
+  const [indexedAnnotations, setIndexedAnnotations] = useState<
+    IndexedAnnotation[]
+  >([])
+  const [isLoadingIndexedAnnotations, setIsLoadingIndexedAnnotations] =
+    useState(false)
+  const [indexedAnnotationError, setIndexedAnnotationError] = useState<
+    string | null
+  >(null)
+  const [isLoadingAnnotationFile, setIsLoadingAnnotationFile] = useState(false)
+  const [backendUrl, setBackendUrl] = useState(getDefaultBackendUrl)
+  const [backendUrlInput, setBackendUrlInput] = useState(getDefaultBackendUrl)
+
+  const graphSelectionOptions = useMemo(() => {
+    if (!localGraphOption) return indexedGraphs
+
+    return [
+      localGraphOption,
+      ...indexedGraphs.filter(graph => graph.id !== localGraphOption.id),
+    ]
+  }, [indexedGraphs, localGraphOption])
+
+  const selectedGraphSupportsExtraction = useMemo(
+    () => indexedGraphs.some(graph => graph.id === selectedIndexedGraph),
+    [indexedGraphs, selectedIndexedGraph],
   )
+
+  const selectedGraphIsLocal =
+    localGraphOption?.id === selectedIndexedGraph
 
   // Drop any stale selections from a previous graph load and preserve the
   // current graph's path ordering for the selector.
@@ -123,6 +182,55 @@ function App({ worker }: AppProps) {
     setDisplayZoom(clampZoom(nextZoom))
   }, [])
 
+  const handleLocateNode = useCallback(() => {
+    const query = nodeLocatorInput.trim()
+    if (!query) {
+      setNodeLocatorError('Enter a node ID')
+      return
+    }
+
+    if (!currentGraph || !layoutResult) {
+      setNodeLocatorError('Load and lay out a graph first')
+      return
+    }
+
+    const normalizedQuery = stripNodeOrientation(query)
+    const matchingNode =
+      currentGraph.nodes.find(
+        node => node.id === query || node.name === query,
+      ) ??
+      currentGraph.nodes.find(
+        node => stripNodeOrientation(node.id) === normalizedQuery,
+      )
+
+    if (!matchingNode) {
+      setNodeLocatorError(`Node "${query}" is not in the current graph`)
+      return
+    }
+
+    setNodeLocatorError(null)
+    setFocusNodeId(matchingNode.id)
+    setFocusNodeRequestId(currentId => currentId + 1)
+  }, [currentGraph, layoutResult, nodeLocatorInput])
+
+  const handleApplyBackendUrl = useCallback(() => {
+    const nextBackendUrl = normalizeBackendUrl(backendUrlInput)
+    if (!nextBackendUrl) return
+
+    localStorage.setItem('backendUrl', nextBackendUrl)
+    setBackendUrl(nextBackendUrl)
+  }, [backendUrlInput])
+
+  const handleResetBackendUrl = useCallback(() => {
+    const defaultBackendUrl = normalizeBackendUrl(
+      import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000',
+    )
+
+    localStorage.removeItem('backendUrl')
+    setBackendUrl(defaultBackendUrl)
+    setBackendUrlInput(defaultBackendUrl)
+  }, [])
+
   useEffect(() => {
     let cancelled = false
 
@@ -142,6 +250,10 @@ function App({ worker }: AppProps) {
 
         setIndexedGraphs(graphs)
         setSelectedIndexedGraph(currentGraphId => {
+          if (currentGraphId.startsWith(LOCAL_GRAPH_ID_PREFIX)) {
+            return currentGraphId
+          }
+
           if (graphs.some(graph => graph.id === currentGraphId)) {
             return currentGraphId
           }
@@ -155,7 +267,11 @@ function App({ worker }: AppProps) {
           error instanceof Error ? error.message : 'Failed to load graph list'
         setIndexedGraphError(message)
         setIndexedGraphs([])
-        setSelectedIndexedGraph('')
+        setSelectedIndexedGraph(currentGraphId =>
+          currentGraphId.startsWith(LOCAL_GRAPH_ID_PREFIX)
+            ? currentGraphId
+            : '',
+        )
       } finally {
         if (!cancelled) {
           setIsLoadingIndexedGraphs(false)
@@ -173,10 +289,55 @@ function App({ worker }: AppProps) {
   useEffect(() => {
     let cancelled = false
 
+    const loadIndexedAnnotations = async () => {
+      try {
+        setIsLoadingIndexedAnnotations(true)
+        setIndexedAnnotationError(null)
+
+        const response = await fetch(`${backendUrl}/api/annotations`)
+        if (!response.ok) {
+          const errorText = await readBackendError(response)
+          throw new Error(errorText || `Backend returned HTTP ${response.status}`)
+        }
+
+        const annotations = (await response.json()) as IndexedAnnotation[]
+        if (cancelled) return
+
+        setIndexedAnnotations(annotations)
+      } catch (error) {
+        if (cancelled) return
+
+        const message =
+          error instanceof Error
+            ? error.message
+            : 'Failed to load annotation list'
+        setIndexedAnnotationError(message)
+        setIndexedAnnotations([])
+      } finally {
+        if (!cancelled) {
+          setIsLoadingIndexedAnnotations(false)
+        }
+      }
+    }
+
+    loadIndexedAnnotations()
+
+    return () => {
+      cancelled = true
+    }
+  }, [backendUrl])
+
+  useEffect(() => {
+    let cancelled = false
+
     const loadRegionPaths = async () => {
-      if (!selectedIndexedGraph) {
+      if (!selectedIndexedGraph || !selectedGraphSupportsExtraction) {
+        setIsLoadingRegionPaths(false)
+        setRegionPathError(null)
         setRegionPaths([])
         setSelectedRegionPathIndex(0)
+        setManualRegionReference('')
+        setManualRegionSequence('')
         setRegionStart('')
         setRegionEnd('')
         return
@@ -187,6 +348,8 @@ function App({ worker }: AppProps) {
         setRegionPathError(null)
         setRegionPaths([])
         setSelectedRegionPathIndex(0)
+        setManualRegionReference('')
+        setManualRegionSequence('')
         setRegionStart('')
         setRegionEnd('')
 
@@ -208,9 +371,13 @@ function App({ worker }: AppProps) {
         const firstPath = paths[0]
         if (firstPath) {
           const defaultEnd = Math.min(firstPath.start + 100000, firstPath.end)
+          setManualRegionReference(firstPath.reference)
+          setManualRegionSequence(firstPath.sequence)
           setRegionStart(String(firstPath.start))
           setRegionEnd(String(defaultEnd))
         } else {
+          setManualRegionReference('')
+          setManualRegionSequence('')
           setRegionStart('')
           setRegionEnd('')
         }
@@ -224,6 +391,8 @@ function App({ worker }: AppProps) {
         setRegionPathError(message)
         setRegionPaths([])
         setSelectedRegionPathIndex(0)
+        setManualRegionReference('')
+        setManualRegionSequence('')
         setRegionStart('')
         setRegionEnd('')
       } finally {
@@ -238,7 +407,7 @@ function App({ worker }: AppProps) {
     return () => {
       cancelled = true
     }
-  }, [backendUrl, selectedIndexedGraph])
+  }, [backendUrl, selectedGraphSupportsExtraction, selectedIndexedGraph])
 
   const handleSelectedRegionPathChange = useCallback(
     (index: number) => {
@@ -247,6 +416,8 @@ function App({ worker }: AppProps) {
 
       if (regionPath) {
         const defaultEnd = Math.min(regionPath.start + 100000, regionPath.end)
+        setManualRegionReference(regionPath.reference)
+        setManualRegionSequence(regionPath.sequence)
         setRegionStart(String(regionPath.start))
         setRegionEnd(String(defaultEnd))
       }
@@ -254,29 +425,142 @@ function App({ worker }: AppProps) {
     [regionPaths],
   )
 
-  // Handle loading GFA from text
-  const loadGFAFromText = useCallback((text: string, filename: string) => {
-    try {
-      setLoadingFile(true)
-      setLoadError(null)
+  const handleBedAnnotationsChange = useCallback(
+    (annotations: BedAnnotation[]) => {
+      setBedAnnotations(annotations)
+      setSelectedBedAnnotation(null)
+    },
+    [],
+  )
 
-      const gfaGraph = parseGFA(text)
-      const graph = convertGFAToGraph(gfaGraph, filename)
-
-      setCurrentGraph(graph)
-      setColorScheme('uniform')
-      setDrawLabels(false)
-      setFileMenuOpen(false)
-      setExamplesMenuOpen(false)
-    } catch (error) {
-      console.error('Failed to parse GFA:', error)
-      setLoadError(
-        error instanceof Error ? error.message : 'Failed to parse GFA file',
+  const handleLoadIndexedAnnotation = useCallback(
+    async (annotationId: string) => {
+      const selectedAnnotation = indexedAnnotations.find(
+        annotation => annotation.id === annotationId,
       )
-    } finally {
-      setLoadingFile(false)
-    }
-  }, [])
+
+      try {
+        setIsLoadingAnnotationFile(true)
+        setLoadError(null)
+
+        const response = await fetch(
+          `${backendUrl}/api/annotations/${encodeURIComponent(annotationId)}`,
+        )
+        if (!response.ok) {
+          const errorText = await readBackendError(response)
+          throw new Error(errorText || `Backend returned HTTP ${response.status}`)
+        }
+
+        return {
+          text: await response.text(),
+          filename: selectedAnnotation?.name ?? annotationId,
+        }
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : 'Failed to load annotation file'
+        setLoadError(message)
+        throw error
+      } finally {
+        setIsLoadingAnnotationFile(false)
+      }
+    },
+    [backendUrl, indexedAnnotations],
+  )
+
+  const handleSelectBedAnnotation = useCallback(
+    (annotation: BedAnnotation, flankBp: number) => {
+      const normalizeName = (name: string) =>
+        name.trim().toLowerCase().replace(/^chr/, '')
+      const annotationChromosome = normalizeName(annotation.chromosome)
+      const matchingRegionPathIndex = regionPaths.findIndex(regionPath => {
+        const sequence = normalizeName(regionPath.sequence)
+        const label = normalizeName(regionPath.label)
+
+        return (
+          sequence === annotationChromosome ||
+          label === annotationChromosome ||
+          label.includes(annotation.chromosome.trim().toLowerCase())
+        )
+      })
+      const matchingRegionPath =
+        matchingRegionPathIndex >= 0
+          ? regionPaths[matchingRegionPathIndex]
+          : undefined
+      const flankedStart = Math.max(
+        matchingRegionPath?.start ?? 0,
+        annotation.start - flankBp,
+      )
+      const flankedEnd = matchingRegionPath
+        ? Math.min(matchingRegionPath.end, annotation.end + flankBp)
+        : annotation.end + flankBp
+
+      setSelectedBedAnnotation(annotation)
+      setRegionStart(String(flankedStart))
+      setRegionEnd(String(flankedEnd))
+
+      if (matchingRegionPathIndex >= 0) {
+        setSelectedRegionPathIndex(matchingRegionPathIndex)
+        setManualRegionReference(
+          regionPaths[matchingRegionPathIndex]?.reference ?? '',
+        )
+        setManualRegionSequence(
+          regionPaths[matchingRegionPathIndex]?.sequence ?? annotation.chromosome,
+        )
+        setLoadError(null)
+      } else {
+        setManualRegionReference('')
+        setManualRegionSequence(annotation.chromosome)
+        setLoadError(null)
+      }
+    },
+    [regionPaths],
+  )
+
+  // Handle loading GFA from text
+  const loadGFAFromText = useCallback(
+    (
+      text: string,
+      filename: string,
+      source: 'browser' | 'backend-extraction' = 'browser',
+    ) => {
+      try {
+        setLoadingFile(true)
+        setLoadError(null)
+
+        const gfaGraph = parseGFA(text)
+        const graph = convertGFAToGraph(gfaGraph, filename)
+
+        if (source === 'browser') {
+          const localGraphId = `${LOCAL_GRAPH_ID_PREFIX}${filename}`
+          setLocalGraphOption({
+            id: localGraphId,
+            name: `${filename} (local, not indexed)`,
+            description:
+              'Loaded in the browser without backend-accessible index files',
+          })
+          setSelectedIndexedGraph(localGraphId)
+        } else {
+          setLocalGraphOption(null)
+        }
+
+        setCurrentGraph(graph)
+        setColorScheme('uniform')
+        setDrawLabels(false)
+        setFileMenuOpen(false)
+        setExamplesMenuOpen(false)
+      } catch (error) {
+        console.error('Failed to parse GFA:', error)
+        setLoadError(
+          error instanceof Error ? error.message : 'Failed to parse GFA file',
+        )
+      } finally {
+        setLoadingFile(false)
+      }
+    },
+    [],
+  )
 
   // Handle loading from URL
   const handleLoadFromURL = useCallback(async () => {
@@ -312,7 +596,7 @@ function App({ worker }: AppProps) {
     const startNode = subgraphStartNode.trim()
     const maxNodes = Number(extractionMaxNodes)
 
-    if (!selectedIndexedGraph) {
+    if (!selectedIndexedGraph || !selectedGraphSupportsExtraction) {
       setLoadError('Choose an indexed graph before extracting a subgraph')
       return
     }
@@ -352,6 +636,7 @@ function App({ worker }: AppProps) {
       loadGFAFromText(
         gfaText,
         `${selectedIndexedGraph}_${startNode}_${maxNodes}_nodes.gfa`,
+        'backend-extraction',
       )
     } catch (error) {
       const message =
@@ -364,23 +649,26 @@ function App({ worker }: AppProps) {
     backendUrl,
     extractionMaxNodes,
     loadGFAFromText,
+    selectedGraphSupportsExtraction,
     selectedIndexedGraph,
     subgraphStartNode,
   ])
 
   const handleExtractRegion = useCallback(async () => {
     const selectedRegionPath = regionPaths[selectedRegionPathIndex]
+    const reference = selectedRegionPath?.reference ?? manualRegionReference.trim()
+    const sequence = selectedRegionPath?.sequence ?? manualRegionSequence.trim()
     const start = Number(regionStart)
     const end = Number(regionEnd)
     const maxNodes = Number(extractionMaxNodes)
 
-    if (!selectedIndexedGraph) {
+    if (!selectedIndexedGraph || !selectedGraphSupportsExtraction) {
       setLoadError('Choose an indexed graph before extracting a region')
       return
     }
 
-    if (!selectedRegionPath) {
-      setLoadError('Choose a coordinate track before extracting a region')
+    if (!sequence) {
+      setLoadError('Enter a sequence before extracting a region')
       return
     }
 
@@ -395,8 +683,8 @@ function App({ worker }: AppProps) {
     }
 
     if (
-      start < selectedRegionPath.start ||
-      end > selectedRegionPath.end
+      selectedRegionPath &&
+      (start < selectedRegionPath.start || end > selectedRegionPath.end)
     ) {
       setLoadError('Region must stay within the selected coordinate track bounds')
       return
@@ -418,8 +706,8 @@ function App({ worker }: AppProps) {
         },
         body: JSON.stringify({
           graph_id: selectedIndexedGraph,
-          reference: selectedRegionPath.reference,
-          sequence: selectedRegionPath.sequence,
+          reference,
+          sequence,
           start,
           end,
           max_nodes: maxNodes,
@@ -432,12 +720,13 @@ function App({ worker }: AppProps) {
       }
 
       const gfaText = await response.text()
-      const referencePrefix = selectedRegionPath.reference
-        ? `${selectedRegionPath.reference}_`
+      const referencePrefix = reference
+        ? `${reference}_`
         : ''
       loadGFAFromText(
         gfaText,
-        `${selectedIndexedGraph}_${referencePrefix}${selectedRegionPath.sequence}_${start}_${end}.gfa`,
+        `${selectedIndexedGraph}_${referencePrefix}${sequence}_${start}_${end}.gfa`,
+        'backend-extraction',
       )
     } catch (error) {
       const message =
@@ -450,9 +739,12 @@ function App({ worker }: AppProps) {
     backendUrl,
     extractionMaxNodes,
     loadGFAFromText,
+    manualRegionReference,
+    manualRegionSequence,
     regionEnd,
     regionPaths,
     regionStart,
+    selectedGraphSupportsExtraction,
     selectedIndexedGraph,
     selectedRegionPathIndex,
   ])
@@ -513,15 +805,80 @@ function App({ worker }: AppProps) {
   )
 
   useEffect(() => {
+    setNodeLocatorInput('')
+    setNodeLocatorError(null)
+    setFocusNodeId(null)
+
     if (!currentGraph?.paths) {
       setSelectedPathNames([])
+      setNodeColorOverrides({})
       return
     }
 
-    // New graphs start with every path visible so the default behavior matches
-    // the original "draw all paths" view until the user filters it down.
-    setSelectedPathNames(currentGraph.paths.map(path => path.name))
+    const availablePathNames = new Set(currentGraph.paths.map(path => path.name))
+    setSelectedPathNames(currentSelected =>
+      currentSelected.filter(pathName => availablePathNames.has(pathName)),
+    )
+    setNodeColorOverrides({})
   }, [currentGraph])
+
+  const handleColorPathNodes = useCallback(
+    (pathName: string, color: string): number => {
+      const path = currentGraph?.paths?.find(candidate => candidate.name === pathName)
+      if (!path || !currentGraph) return 0
+
+      const normalizedColor = color.startsWith('#') ? color : `#${color}`
+      const graphNodeIds = new Set(currentGraph.nodes.map(node => node.id))
+      const graphNodeIdsByDisplayKey = new Map<string, string[]>()
+
+      for (const node of currentGraph.nodes) {
+        const displayKey = stripNodeOrientation(node.id)
+        const existingIds = graphNodeIdsByDisplayKey.get(displayKey) ?? []
+        existingIds.push(node.id)
+        graphNodeIdsByDisplayKey.set(displayKey, existingIds)
+      }
+
+      const matchedNodeIds = new Set<string>()
+      const matchedDisplayKeys = new Set<string>()
+
+      path.nodeIds.forEach(pathNodeId => {
+        const displayKey = stripNodeOrientation(pathNodeId)
+        const candidateNodeIds = [
+          pathNodeId,
+          displayKey,
+          ...(graphNodeIdsByDisplayKey.get(displayKey) ?? []),
+        ]
+
+        candidateNodeIds.forEach(candidateNodeId => {
+          if (graphNodeIds.has(candidateNodeId)) {
+            matchedNodeIds.add(candidateNodeId)
+            matchedDisplayKeys.add(stripNodeOrientation(candidateNodeId))
+          }
+        })
+      })
+
+      if (matchedNodeIds.size === 0) {
+        return 0
+      }
+
+      setNodeColorOverrides(currentOverrides => {
+        const nextOverrides = { ...currentOverrides }
+
+        matchedNodeIds.forEach(nodeId => {
+          nextOverrides[nodeId] = normalizedColor
+        })
+
+        return nextOverrides
+      })
+
+      return matchedDisplayKeys.size
+    },
+    [currentGraph],
+  )
+
+  const handleClearPathNodeColors = useCallback(() => {
+    setNodeColorOverrides({})
+  }, [])
 
   // Compute layout when graph or options change
   const computeLayout = useCallback(async () => {
@@ -754,6 +1111,26 @@ function App({ worker }: AppProps) {
               )}
             </div>
           </div>
+          <form
+            className="backend-url-control"
+            onSubmit={event => {
+              event.preventDefault()
+              handleApplyBackendUrl()
+            }}
+          >
+            <label htmlFor="backend-url-input">Backend</label>
+            <input
+              id="backend-url-input"
+              type="url"
+              value={backendUrlInput}
+              onChange={event => setBackendUrlInput(event.currentTarget.value)}
+              placeholder="http://192.168.1.10:8000"
+            />
+            <button type="submit">Apply</button>
+            <button type="button" onClick={handleResetBackendUrl}>
+              Reset
+            </button>
+          </form>
         </div>
       </header>
 
@@ -771,9 +1148,11 @@ function App({ worker }: AppProps) {
       <main className="app-main">
         <div className="left-panel">
           <GraphExtractionControls
-            graphs={indexedGraphs}
+            graphs={graphSelectionOptions}
             selectedGraphId={selectedIndexedGraph}
             onSelectedGraphIdChange={setSelectedIndexedGraph}
+            supportsExtraction={selectedGraphSupportsExtraction}
+            selectedGraphIsLocal={selectedGraphIsLocal}
             graphListError={indexedGraphError}
             isLoadingGraphs={isLoadingIndexedGraphs}
             maxNodes={extractionMaxNodes}
@@ -786,6 +1165,10 @@ function App({ worker }: AppProps) {
             onSelectedRegionPathIndexChange={handleSelectedRegionPathChange}
             regionPathError={regionPathError}
             isLoadingRegionPaths={isLoadingRegionPaths}
+            manualRegionReference={manualRegionReference}
+            onManualRegionReferenceChange={setManualRegionReference}
+            manualRegionSequence={manualRegionSequence}
+            onManualRegionSequenceChange={setManualRegionSequence}
             regionStart={regionStart}
             onRegionStartChange={setRegionStart}
             regionEnd={regionEnd}
@@ -819,67 +1202,148 @@ function App({ worker }: AppProps) {
         </div>
 
         <div className="right-panel">
-          <div className="visualization-section">
-            <h3>Graph Layout</h3>
-            {isComputing ? (
-              <div className="loading">
-                <div className="spinner"></div>
-                <p>Computing layout...</p>
-              </div>
-            ) : layoutResult ? (
-              <>
-                <GraphCanvas
-                  layoutResult={layoutResult}
-                  graph={currentGraph}
-                  width={1200}
-                  height={800}
-                  isDarkMode={isDarkMode}
-                  colorScheme={colorScheme}
-                  zoom={zoom}
-                  zoomRequestId={zoomRequestId}
-                  onInternalZoomChange={handleCanvasZoomChange}
-                  contigThickness={contigThickness}
-                  connectorThickness={connectorThickness}
-                  drawLabels={drawLabels}
-                  labelLengthThreshold={labelLengthThreshold}
-                  drawPaths={drawPaths}
-                  visiblePathIds={visiblePathNameSet}
-                />
-                {/* Keep path selection close to the rendered graph so long path
-                    names and search results are easier to scan. */}
-                {drawPaths &&
-                  currentGraph?.paths &&
-                  currentGraph.paths.length > 0 && (
-                    <PathsLegend
-                      paths={currentGraph.paths}
-                      isDarkMode={isDarkMode}
-                      selectedPathNames={visiblePathNames}
-                      onTogglePath={pathName =>
-                        setSelectedPathNames(currentSelected =>
-                          currentSelected.includes(pathName)
-                            ? currentSelected.filter(name => name !== pathName)
-                            : [...currentSelected, pathName],
-                        )
-                      }
-                      onSelectAll={() =>
-                        setSelectedPathNames(
-                          currentGraph.paths?.map(path => path.name) ?? [],
-                        )
-                      }
-                      onDeselectAll={() => setSelectedPathNames([])}
-                    />
-                  )}
-              </>
-            ) : currentGraph ? (
-              <div className="placeholder">
-                <p>Click "Redraw" to visualize the graph</p>
-              </div>
-            ) : (
-              <div className="placeholder">
-                <p>Load a GFA file from the File menu to get started</p>
-              </div>
-            )}
+          <div className="view-switch" role="tablist" aria-label="Main view">
+            <button
+              type="button"
+              className={rightPanelView === 'graph' ? 'active' : undefined}
+              onClick={() => setRightPanelView('graph')}
+              role="tab"
+              aria-selected={rightPanelView === 'graph'}
+            >
+              Graph Layout
+            </button>
+            <button
+              type="button"
+              className={
+                rightPanelView === 'annotations' ? 'active' : undefined
+              }
+              onClick={() => setRightPanelView('annotations')}
+              role="tab"
+              aria-selected={rightPanelView === 'annotations'}
+            >
+              Annotations
+            </button>
           </div>
+
+          {rightPanelView === 'annotations' ? (
+            <div className="visualization-section">
+              <BedAnnotationPanel
+                annotations={bedAnnotations}
+                selectedAnnotation={selectedBedAnnotation}
+                onAnnotationsChange={handleBedAnnotationsChange}
+                onSelectAnnotation={handleSelectBedAnnotation}
+                indexedAnnotations={indexedAnnotations}
+                indexedAnnotationError={indexedAnnotationError}
+                isLoadingIndexedAnnotations={isLoadingIndexedAnnotations}
+                isLoadingAnnotationFile={isLoadingAnnotationFile}
+                onLoadIndexedAnnotation={handleLoadIndexedAnnotation}
+              />
+            </div>
+          ) : (
+            <div className="visualization-section">
+              <div className="graph-layout-header">
+                <h3>Graph Layout</h3>
+                <form
+                  className="node-locator-form"
+                  onSubmit={event => {
+                    event.preventDefault()
+                    handleLocateNode()
+                  }}
+                >
+                  <input
+                    className="control-input node-locator-input"
+                    type="search"
+                    value={nodeLocatorInput}
+                    onChange={event => {
+                      setNodeLocatorInput(event.currentTarget.value)
+                      setNodeLocatorError(null)
+                    }}
+                    placeholder="Node ID"
+                    aria-label="Node ID to locate"
+                    disabled={isComputing || !layoutResult}
+                  />
+                  <button
+                    className="node-locator-button"
+                    type="submit"
+                    disabled={
+                      isComputing || !layoutResult || !nodeLocatorInput.trim()
+                    }
+                  >
+                    Go to Node
+                  </button>
+                </form>
+              </div>
+              {nodeLocatorError && (
+                <div className="node-locator-error" role="alert">
+                  {nodeLocatorError}
+                </div>
+              )}
+              {isComputing ? (
+                <div className="loading">
+                  <div className="spinner"></div>
+                  <p>Computing layout...</p>
+                </div>
+              ) : layoutResult ? (
+                <>
+                  <GraphCanvas
+                    layoutResult={layoutResult}
+                    graph={currentGraph}
+                    width={1200}
+                    height={800}
+                    isDarkMode={isDarkMode}
+                    colorScheme={colorScheme}
+                    zoom={zoom}
+                    zoomRequestId={zoomRequestId}
+                    onInternalZoomChange={handleCanvasZoomChange}
+                    focusNodeId={focusNodeId}
+                    focusNodeRequestId={focusNodeRequestId}
+                    contigThickness={contigThickness}
+                    connectorThickness={connectorThickness}
+                    drawLabels={drawLabels}
+                    labelLengthThreshold={labelLengthThreshold}
+                    drawPaths={drawPaths}
+                    visiblePathIds={visiblePathNameSet}
+                    nodeColorOverrides={nodeColorOverrides}
+                    onUseAsStartNode={setSubgraphStartNode}
+                  />
+                  {/* Keep path selection close to the rendered graph so long path
+                    names and search results are easier to scan. */}
+                  {drawPaths &&
+                    currentGraph?.paths &&
+                    currentGraph.paths.length > 0 && (
+                      <PathsLegend
+                        paths={currentGraph.paths}
+                        isDarkMode={isDarkMode}
+                        selectedPathNames={visiblePathNames}
+                        onTogglePath={pathName =>
+                          setSelectedPathNames(currentSelected =>
+                            currentSelected.includes(pathName)
+                              ? currentSelected.filter(name => name !== pathName)
+                              : [...currentSelected, pathName],
+                          )
+                        }
+                        onSelectAll={() =>
+                          setSelectedPathNames(
+                            currentGraph.paths?.map(path => path.name) ?? [],
+                          )
+                        }
+                        onDeselectAll={() => setSelectedPathNames([])}
+                        onColorPathNodes={handleColorPathNodes}
+                        onClearNodeColors={handleClearPathNodeColors}
+                      />
+                    )}
+                </>
+              ) : currentGraph ? (
+                <div className="placeholder">
+                  <p>Click "Redraw" to visualize the graph</p>
+                </div>
+              ) : (
+                <div className="placeholder">
+                  <p>Load a GFA file from the File menu to get started</p>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </main>
 

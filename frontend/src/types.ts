@@ -40,6 +40,12 @@ export interface IndexedGraph {
   description: string
 }
 
+export interface IndexedAnnotation {
+  id: string
+  name: string
+  description: string
+}
+
 export interface RegionPath {
   source: string
   reference: string
@@ -49,6 +55,21 @@ export interface RegionPath {
   end: number
   entries: number
   label: string
+}
+
+export interface BedAnnotation {
+  id: string
+  chromosome: string
+  start: number
+  end: number
+  lineNumber: number
+  columns: BedAnnotationColumn[]
+}
+
+export interface BedAnnotationColumn {
+  index: number
+  header: string
+  value: string
 }
 
 export interface LayoutOptions {
@@ -93,6 +114,9 @@ export interface GraphStats {
 
 export interface Transform {
   scale: number
+  // Rotation is stored in radians; positive values appear clockwise because
+  // canvas screen coordinates increase downward.
+  rotation: number
   translateX: number
   translateY: number
 }

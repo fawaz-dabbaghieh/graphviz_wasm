@@ -8,6 +8,8 @@ Current minimal shape:
 - `app/main.py`: API entry point.
 - `gfaidx_bin/gfaidx`: symlink or binary used for extraction.
 - `graphs.tsv`: server-controlled list of indexed graphs exposed to the UI.
+- `annotations.tsv`: server-controlled list of BED/TSV annotation files exposed
+  to the UI.
 - `indexed_example/chr22.indexed.gfa.gz`: current indexed graph example.
 
 Keep user requests constrained to graph IDs and validated extraction parameters;
@@ -25,10 +27,35 @@ chr22	chr22	indexed_example/chr22.indexed.gfa.gz	CHM13 and GRCh38 chr22 indexed 
 Paths can be absolute or relative to `backend/`. The browser only sends
 `graph_id`; filesystem paths remain server-controlled.
 
+## Annotation registry
+
+Available backend annotation files are configured in `backend/annotations.tsv`:
+
+```tsv
+annotation_id	display_name	path	description
+chr22_ucsc_transcripts	chr22 UCSC transcripts	indexed_example/chr22_annotations.bed	UCSC chr22 transcript BED table
+```
+
+The frontend calls `GET /api/annotations` to populate the annotation dropdown
+and `GET /api/annotations/{annotation_id}` to load the selected BED/TSV text.
+The browser only sends `annotation_id`; filesystem paths remain
+server-controlled.
+
 ## Local development
 
-From the repository root, install the backend dependencies inside your Conda
-environment if they are not already available:
+From the repository root, the simplest test path is:
+
+```bash
+conda env create -f environment.yml
+conda activate graphviz-wasm
+./run_dev.sh
+```
+
+This starts the FastAPI backend, starts the Vite frontend, and uses `gfaidx`
+from the active Conda environment.
+
+If you want to run the backend manually, install the backend dependencies inside
+your Conda environment if they are not already available:
 
 ```bash
 pip install -r backend/requirements.txt

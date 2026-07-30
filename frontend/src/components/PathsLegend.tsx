@@ -8,6 +8,25 @@ interface PathsLegendProps {
   onTogglePath: (pathName: string) => void
   onSelectAll: () => void
   onDeselectAll: () => void
+  onColorPathNodes: (pathName: string, color: string) => number
+  onClearNodeColors: () => void
+}
+
+interface ColorFeedback {
+  pathName: string
+  message: string
+  isError?: boolean
+}
+
+function normalizeHexColorInput(color: string): string | null {
+  const trimmedColor = color.trim()
+  const normalizedColor = trimmedColor.startsWith('#')
+    ? trimmedColor
+    : `#${trimmedColor}`
+
+  return /^#[0-9a-fA-F]{6}$/.test(normalizedColor)
+    ? normalizedColor
+    : null
 }
 
 export function PathsLegend({
@@ -17,8 +36,16 @@ export function PathsLegend({
   onTogglePath,
   onSelectAll,
   onDeselectAll,
+  onColorPathNodes,
+  onClearNodeColors,
 }: PathsLegendProps) {
   const [searchQuery, setSearchQuery] = useState('')
+  const [activeColorPathName, setActiveColorPathName] = useState<string | null>(
+    null,
+  )
+  const [nodeColorInput, setNodeColorInput] = useState('#e53935')
+  const [colorFeedback, setColorFeedback] = useState<ColorFeedback | null>(null)
+  const colorPresets = ['#e53935', '#1e88e5', '#43a047', '#fdd835', '#8e24aa']
 
   // Generate colors matching GraphCanvas
   const hueStep = 360 / paths.length
@@ -37,6 +64,29 @@ export function PathsLegend({
 
     return paths.filter(path => path.name.toLowerCase().includes(normalizedQuery))
   }, [paths, searchQuery])
+
+  const applyNodeColor = (pathName: string, color: string) => {
+    const normalizedColor = normalizeHexColorInput(color)
+    if (!normalizedColor) {
+      setColorFeedback({
+        pathName,
+        message: 'Enter a 6-digit hex color.',
+        isError: true,
+      })
+      return
+    }
+
+    setNodeColorInput(normalizedColor)
+    const coloredNodeCount = onColorPathNodes(pathName, normalizedColor)
+    setColorFeedback({
+      pathName,
+      message:
+        coloredNodeCount === 0
+          ? 'No matching displayed nodes found.'
+          : `Colored ${coloredNodeCount.toLocaleString()} displayed node${coloredNodeCount === 1 ? '' : 's'}.`,
+      isError: coloredNodeCount === 0,
+    })
+  }
 
   return (
     <div
@@ -116,6 +166,24 @@ export function PathsLegend({
         >
           Deselect all
         </button>
+        <button
+          type="button"
+          onClick={() => {
+            onClearNodeColors()
+            setColorFeedback(null)
+          }}
+          style={{
+            padding: '4px 8px',
+            borderRadius: '4px',
+            border: isDarkMode ? '1px solid #555' : '1px solid #ccc',
+            background: isDarkMode ? '#3a3a3a' : '#fff',
+            color: isDarkMode ? '#e0e0e0' : '#333',
+            cursor: 'pointer',
+            fontSize: '12px',
+          }}
+        >
+          Clear node colors
+        </button>
         <span
           style={{
             color: isDarkMode ? '#aaa' : '#666',
@@ -142,57 +210,159 @@ export function PathsLegend({
           const idx = paths.findIndex(candidate => candidate.name === path.name)
 
           return (
-          <label
+          <div
             key={path.name}
             style={{
               display: 'flex',
-              alignItems: 'center',
+              flexDirection: 'column',
               gap: '8px',
               fontSize: '12px',
-              opacity: selectedPathNameSet.has(path.name) ? 1 : 0.55,
-              cursor: 'pointer',
+              opacity: selectedPathNameSet.has(path.name) ? 1 : 0.8,
             }}
           >
-            <input
-              type="checkbox"
-              checked={selectedPathNameSet.has(path.name)}
-              onChange={() => onTogglePath(path.name)}
-            />
-            <div
+            <label
               style={{
-                width: '30px',
-                height: '3px',
-                backgroundColor: pathColors[idx],
-                borderRadius: '2px',
-                flexShrink: 0,
-              }}
-            />
-            <span
-              title={path.name}
-              style={{
-                color: isDarkMode ? '#ccc' : '#555',
-                // Long path names are truncated in the row, but the full value
-                // remains available via the title tooltip.
-                minWidth: 0,
-                flex: 1,
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                cursor: 'pointer',
               }}
             >
-              {path.name}
-            </span>
-            <span
+              <input
+                type="checkbox"
+                checked={selectedPathNameSet.has(path.name)}
+                onChange={() => onTogglePath(path.name)}
+              />
+              <div
+                style={{
+                  width: '30px',
+                  height: '3px',
+                  backgroundColor: pathColors[idx],
+                  borderRadius: '2px',
+                  flexShrink: 0,
+                }}
+              />
+              <span
+                title={path.name}
+                style={{
+                  color: isDarkMode ? '#ccc' : '#555',
+                  minWidth: 0,
+                  flex: 1,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {path.name}
+              </span>
+              <span
+                style={{
+                  color: isDarkMode ? '#888' : '#999',
+                  fontSize: '11px',
+                  marginLeft: 'auto',
+                  flexShrink: 0,
+                }}
+              >
+                {path.nodeIds.length} nodes
+              </span>
+              <button
+                type="button"
+                onClick={event => {
+                  event.preventDefault()
+                  setActiveColorPathName(
+                    activeColorPathName === path.name ? null : path.name,
+                  )
+                }}
+                title="Color nodes in this path"
+                style={{
+                  padding: '3px 7px',
+                  borderRadius: '4px',
+                  border: isDarkMode ? '1px solid #555' : '1px solid #ccc',
+                  background: isDarkMode ? '#3a3a3a' : '#fff',
+                  color: isDarkMode ? '#e0e0e0' : '#333',
+                  cursor: 'pointer',
+                  fontSize: '11px',
+                  flexShrink: 0,
+                }}
+              >
+                Color
+              </button>
+            </label>
+            {activeColorPathName === path.name && (
+              <div
               style={{
-                color: isDarkMode ? '#888' : '#999',
-                fontSize: '11px',
-                marginLeft: 'auto',
-                flexShrink: 0,
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                paddingLeft: '22px',
+                flexWrap: 'wrap',
               }}
-            >
-              {path.nodeIds.length} nodes
-            </span>
-          </label>
+              >
+                {colorPresets.map(color => (
+                  <button
+                    key={color}
+                    type="button"
+                    aria-label={`Color nodes ${color}`}
+                    onClick={() => {
+                      applyNodeColor(path.name, color)
+                    }}
+                    style={{
+                      width: '20px',
+                      height: '20px',
+                      borderRadius: '4px',
+                      border: isDarkMode ? '1px solid #777' : '1px solid #aaa',
+                      background: color,
+                      cursor: 'pointer',
+                    }}
+                  />
+                ))}
+                <input
+                  type="text"
+                  value={nodeColorInput}
+                  onChange={event => setNodeColorInput(event.currentTarget.value)}
+                  style={{
+                    width: '82px',
+                    boxSizing: 'border-box',
+                    padding: '4px 6px',
+                    borderRadius: '4px',
+                    border: isDarkMode ? '1px solid #555' : '1px solid #ccc',
+                    background: isDarkMode ? '#1f1f1f' : '#fff',
+                    color: isDarkMode ? '#e0e0e0' : '#333',
+                    fontSize: '12px',
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => applyNodeColor(path.name, nodeColorInput)}
+                  style={{
+                    padding: '4px 8px',
+                    borderRadius: '4px',
+                    border: isDarkMode ? '1px solid #555' : '1px solid #ccc',
+                    background: isDarkMode ? '#3a3a3a' : '#fff',
+                    color: isDarkMode ? '#e0e0e0' : '#333',
+                    cursor: 'pointer',
+                    fontSize: '12px',
+                  }}
+                >
+                  Apply
+                </button>
+                {colorFeedback?.pathName === path.name && (
+                  <span
+                    style={{
+                      color: colorFeedback.isError
+                        ? '#ef5350'
+                        : isDarkMode
+                          ? '#aaa'
+                          : '#666',
+                      fontSize: '11px',
+                    }}
+                  >
+                    {colorFeedback.message}
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
           )
         })}
         {filteredPaths.length === 0 && (
