@@ -174,8 +174,7 @@ backend currently ships with a `chr22` registry entry and refuses requests above
 ## Building
 
 ```bash
-cd bandage-layout-js
-./build.sh
+./layout_wasm/build.sh
 ```
 
 Requires:

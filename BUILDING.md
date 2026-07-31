@@ -4,7 +4,18 @@ This document describes how to build the WebAssembly version of Bandage Layout.
 
 ## Prerequisites
 
-1. **Emscripten SDK** (Latest version recommended)
+1. **Emscripten SDK**
+
+   The project Conda environment pins Emscripten 3.1.58 with Binaryen 117,
+   which are compatible on both macOS and Linux:
+
+   ```bash
+   conda env create -f environment.yml
+   conda activate graphviz-wasm
+   ```
+
+   To use a separately installed Emscripten SDK instead:
+
    ```bash
    # Install Emscripten
    git clone https://github.com/emscripten-core/emsdk.git
@@ -56,15 +67,15 @@ emcc --version
 
 ### 3. Build OGDF Library
 
-The build script will automatically build OGDF with Emscripten if not already built:
+The build script configures and incrementally builds OGDF with Emscripten:
 ```bash
-cd bandage-layout-js
-./build.sh
+conda activate graphviz-wasm
+./layout_wasm/build.sh
 ```
 
 This will:
-1. Build OGDF with Emscripten → `../thirdparty/ogdf/build-wasm/`
-2. Build Bandage Layout → `build/`
+1. Build OGDF with Emscripten → `layout_wasm/.build/ogdf/`
+2. Build Bandage Layout → `layout_wasm/.build/bandage-layout/`
 3. Copy outputs to `js/` directory
 
 ### 4. Build Outputs
@@ -78,15 +89,15 @@ bandage-layout-js/
 │   ├── bandage-layout-wrapper.js  # High-level JS API
 │   ├── bandage-layout.worker.js   # Web Worker implementation
 │   └── bandage-layout-worker-interface.js
-└── build/
-    └── ... (build artifacts)
+└── layout_wasm/
+    └── .build/                    # Generated build artifacts
 ```
 
 ## Build Configuration
 
 ### Release Build (Default)
 ```bash
-./build.sh
+./layout_wasm/build.sh
 ```
 
 ### Debug Build
@@ -190,8 +201,8 @@ cd emsdk
 source ./emsdk_env.sh
 
 # Build
-cd /path/to/bandage-layout-js
-./build.sh
+cd /path/to/graphviz_wasm
+./layout_wasm/build.sh
 ```
 
 ## Advanced: Custom OGDF Configuration
@@ -199,14 +210,15 @@ cd /path/to/bandage-layout-js
 To customize OGDF build:
 
 ```bash
-cd ../thirdparty/ogdf/build-wasm
-emcmake cmake .. \
+emcmake cmake \
+    -S layout_wasm/thirdparty/ogdf \
+    -B layout_wasm/.build/ogdf \
     -DCMAKE_BUILD_TYPE=Release \
     -DBUILD_SHARED_LIBS=OFF \
     -DOGDF_SEPARATE_TESTS=OFF \
     -DOGDF_MEMORY_MANAGER=POOL_TS  # Or other memory manager
 
-emmake make -j$(nproc)
+cmake --build layout_wasm/.build/ogdf --parallel
 ```
 
 ## Next Steps

@@ -12,9 +12,9 @@ cd emsdk
 ./emsdk activate latest
 source ./emsdk_env.sh
 
-# 2. Build Bandage Layout JS
-cd /path/to/BandageNG/bandage-layout-js
-./build.sh
+# 2. Build Bandage Layout JS from the repository root
+cd /path/to/graphviz_wasm
+./layout_wasm/build.sh
 
 # This will take 6-17 minutes on first build
 # (OGDF compilation is the slowest part)
