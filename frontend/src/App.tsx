@@ -10,7 +10,10 @@ import { urlExamples } from './data/urlExamples'
 import { BandageLayoutWorker } from './utils/BandageLayoutWorker'
 import { parseGFA } from './utils/gfaParser'
 import { convertGFAToGraph } from './utils/gfaConverter'
-import { stripNodeOrientation } from './utils/displayGraph'
+import {
+  pathHasRepeatedSegments,
+  stripNodeOrientation,
+} from './utils/displayGraph'
 import { clampZoom } from './utils/zoom'
 import type {
   LayoutOptions,
@@ -68,6 +71,7 @@ function App({ worker }: AppProps) {
   const [layoutOptions, setLayoutOptions] = useState<LayoutOptions>({
     quality: 2,
     linearLayout: false,
+    referencePathName: '',
     componentSeparation: 15.0,
     aspectRatio: 1.5,
     nodeLengthPerMegabase: 2000.0,
@@ -826,6 +830,19 @@ function App({ worker }: AppProps) {
     setNodeLocatorInput('')
     setNodeLocatorError(null)
     setFocusNodeId(null)
+    setLayoutOptions(currentOptions => {
+      if (!currentOptions.referencePathName) return currentOptions
+
+      const referencePath = currentGraph?.paths?.find(
+        path => path.name === currentOptions.referencePathName,
+      )
+      const hasRepeatedSegment =
+        referencePath && pathHasRepeatedSegments(referencePath.nodeIds)
+
+      return referencePath && !hasRepeatedSegment
+        ? currentOptions
+        : { ...currentOptions, referencePathName: '' }
+    })
 
     if (!currentGraph?.paths) {
       setSelectedPathNames([])
@@ -898,6 +915,22 @@ function App({ worker }: AppProps) {
     setNodeColorOverrides({})
   }, [])
 
+  const effectiveLayoutOptions = useMemo(() => {
+    if (!layoutOptions.linearLayout || !layoutOptions.referencePathName) {
+      return layoutOptions
+    }
+
+    const referencePath = currentGraph?.paths?.find(
+      path => path.name === layoutOptions.referencePathName,
+    )
+    const hasRepeatedSegment =
+      referencePath && pathHasRepeatedSegments(referencePath.nodeIds)
+
+    return referencePath && !hasRepeatedSegment
+      ? layoutOptions
+      : { ...layoutOptions, referencePathName: '' }
+  }, [currentGraph?.paths, layoutOptions])
+
   // Compute layout when graph or options change
   const computeLayout = useCallback(async () => {
     if (!worker) {
@@ -911,7 +944,7 @@ function App({ worker }: AppProps) {
 
       const { result, duration } = await worker.computeLayout(
         currentGraph,
-        layoutOptions,
+        effectiveLayoutOptions,
       )
       setLayoutResult(result)
       setLayoutDuration(duration)
@@ -920,7 +953,7 @@ function App({ worker }: AppProps) {
     } finally {
       setIsComputing(false)
     }
-  }, [worker, currentGraph, layoutOptions])
+  }, [worker, currentGraph, effectiveLayoutOptions])
 
   // Use a ref to track the current request ID
   const requestIdRef = useRef(0)
@@ -940,7 +973,7 @@ function App({ worker }: AppProps) {
       try {
         const { result, duration } = await worker.computeLayout(
           currentGraph,
-          layoutOptions,
+          effectiveLayoutOptions,
         )
 
         // Only update state if this is still the latest request
@@ -1220,6 +1253,7 @@ function App({ worker }: AppProps) {
             hasPathsInGraph={
               !!currentGraph?.paths && currentGraph.paths.length > 0
             }
+            paths={currentGraph?.paths ?? []}
           />
         </div>
 

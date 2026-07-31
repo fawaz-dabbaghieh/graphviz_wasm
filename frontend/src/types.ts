@@ -91,6 +91,7 @@ export interface BedAnnotationColumn {
 export interface LayoutOptions {
   quality: number
   linearLayout: boolean
+  referencePathName: string
   componentSeparation: number
   aspectRatio: number
   nodeLengthPerMegabase: number

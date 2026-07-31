@@ -22,7 +22,10 @@
 #include <ctime>
 #include <cmath>
 #include <algorithm>
+#include <limits>
 #include <set>
+#include <unordered_map>
+#include <vector>
 
 using namespace ogdf;
 using namespace ogdf::energybased;
@@ -175,6 +178,95 @@ static void addToOgdfGraph(const DeBruijnEdge* edge,
     edgeArray[newEdge] = settings->edgeLength;
 }
 
+struct ReferencePathPoint {
+    ogdf::node node;
+    DPoint sourcePosition;
+    double targetX;
+};
+
+static bool collectReferencePathPoints(
+        const AssemblyGraph& graph,
+        const std::vector<std::string>& referencePathNodeIds,
+        const OGDFGraphLayout& layout,
+        const GraphAttributes& graphAttributes,
+        const LayoutSettings* settings,
+        std::vector<ReferencePathPoint>& points) {
+    points.clear();
+    double nextNodeX = 0.0;
+
+    for (size_t pathIndex = 0;
+         pathIndex < referencePathNodeIds.size();
+         ++pathIndex) {
+        auto graphNodeIt = graph.nodes.find(referencePathNodeIds[pathIndex]);
+        if (graphNodeIt == graph.nodes.end())
+            return false;
+
+        DeBruijnNode* pathNode = graphNodeIt->second;
+        auto layoutIt = layout.find(pathNode);
+        bool reverseSegments = false;
+
+        if (layoutIt == layout.end() && pathNode->getReverseComplement()) {
+            layoutIt = layout.find(pathNode->getReverseComplement());
+            reverseSegments = layoutIt != layout.end();
+        }
+        if (layoutIt == layout.end() || layoutIt->second.empty())
+            return false;
+
+        const auto& segments = layoutIt->second;
+        double drawnNodeLength =
+            getDrawnNodeLength(settings, pathNode->getLength());
+        double segmentSpacing = segments.size() > 1
+            ? drawnNodeLength / static_cast<double>(segments.size() - 1)
+            : 0.0;
+
+        for (size_t segmentIndex = 0;
+             segmentIndex < segments.size();
+             ++segmentIndex) {
+            size_t orientedIndex = reverseSegments
+                ? segments.size() - segmentIndex - 1
+                : segmentIndex;
+            ogdf::node segment = segments[orientedIndex];
+            points.push_back({
+                segment,
+                graphAttributes.point(segment),
+                nextNodeX + segmentSpacing * static_cast<double>(segmentIndex),
+            });
+        }
+
+        nextNodeX += drawnNodeLength;
+        if (pathIndex + 1 < referencePathNodeIds.size())
+            nextNodeX += settings->edgeLength;
+    }
+
+    if (points.empty())
+        return false;
+
+    double centerX = (points.front().targetX + points.back().targetX) / 2.0;
+    for (auto& point : points)
+        point.targetX -= centerX;
+
+    return true;
+}
+
+static bool positionReferencePathInitially(
+        const AssemblyGraph& graph,
+        const std::vector<std::string>& referencePathNodeIds,
+        const OGDFGraphLayout& layout,
+        GraphAttributes& graphAttributes,
+        const LayoutSettings* settings) {
+    std::vector<ReferencePathPoint> points;
+    if (!collectReferencePathPoints(graph, referencePathNodeIds, layout,
+                                    graphAttributes, settings, points))
+        return false;
+
+    // A straight initial backbone gives FMMM a less distorted starting point.
+    for (const auto& point : points) {
+        graphAttributes.x(point.node) = point.targetX;
+        graphAttributes.y(point.node) = 0.0;
+    }
+    return true;
+}
+
 static void determineLinearNodePositions(Graph& ogdfGraph,
                                         GraphAttributes& ogdfGraphAttributes,
                                         EdgeArray<double>& ogdfEdgeLengths,
@@ -296,6 +388,151 @@ static void buildGraph(Graph& ogdfGraph,
     }
 }
 
+struct ReferenceFlatteningFrame {
+    double targetX;
+    double targetY;
+    double sourceTangentX;
+    double sourceTangentY;
+};
+
+static bool findReferenceFlatteningFrame(
+        const DPoint& sourcePoint,
+        const std::vector<ReferencePathPoint>& pathPoints,
+        ReferenceFlatteningFrame& frame) {
+    double closestSquaredDistance =
+        std::numeric_limits<double>::infinity();
+    bool foundFrame = false;
+
+    for (size_t i = 0; i + 1 < pathPoints.size(); ++i) {
+        const auto& first = pathPoints[i];
+        const auto& second = pathPoints[i + 1];
+        double deltaX =
+            second.sourcePosition.m_x - first.sourcePosition.m_x;
+        double deltaY =
+            second.sourcePosition.m_y - first.sourcePosition.m_y;
+        double segmentLengthSquared =
+            deltaX * deltaX + deltaY * deltaY;
+        if (segmentLengthSquared <= 1e-12)
+            continue;
+
+        double relativeX =
+            sourcePoint.m_x - first.sourcePosition.m_x;
+        double relativeY =
+            sourcePoint.m_y - first.sourcePosition.m_y;
+        double projection =
+            (relativeX * deltaX + relativeY * deltaY) /
+            segmentLengthSquared;
+        projection = std::max(0.0, std::min(1.0, projection));
+
+        double projectedX =
+            first.sourcePosition.m_x + projection * deltaX;
+        double projectedY =
+            first.sourcePosition.m_y + projection * deltaY;
+        double distanceX = sourcePoint.m_x - projectedX;
+        double distanceY = sourcePoint.m_y - projectedY;
+        double squaredDistance =
+            distanceX * distanceX + distanceY * distanceY;
+        if (squaredDistance >= closestSquaredDistance)
+            continue;
+
+        double segmentLength = std::sqrt(segmentLengthSquared);
+        double tangentX = deltaX / segmentLength;
+        double tangentY = deltaY / segmentLength;
+        double targetPathX =
+            first.targetX +
+            projection * (second.targetX - first.targetX);
+
+        closestSquaredDistance = squaredDistance;
+        frame.targetX =
+            targetPathX + tangentX * distanceX + tangentY * distanceY;
+        frame.targetY = tangentX * distanceY - tangentY * distanceX;
+        frame.sourceTangentX = tangentX;
+        frame.sourceTangentY = tangentY;
+        foundFrame = true;
+    }
+
+    return foundFrame;
+}
+
+static int linearizeReferencePath(
+        const AssemblyGraph& graph,
+        const std::vector<std::string>& referencePathNodeIds,
+        const OGDFGraphLayout& layout,
+        GraphAttributes& graphAttributes,
+        const NodeArray<int>& componentNumber,
+        const LayoutSettings* settings) {
+    std::vector<ReferencePathPoint> pathPoints;
+    if (!collectReferencePathPoints(graph, referencePathNodeIds, layout,
+                                    graphAttributes, settings, pathPoints))
+        return -1;
+
+    int referenceComponent = componentNumber[pathPoints.front().node];
+    for (const auto& point : pathPoints) {
+        if (componentNumber[point.node] != referenceComponent)
+            return -1;
+    }
+
+    const Graph& graphForArrays = graphAttributes.constGraph();
+    NodeArray<bool> isReferencePoint(graphForArrays, false);
+    NodeArray<double> referenceTargetX(graphForArrays, 0.0);
+    for (const auto& point : pathPoints) {
+        isReferencePoint[point.node] = true;
+        referenceTargetX[point.node] = point.targetX;
+    }
+
+    // Transform each logical node in one local reference frame so its internal
+    // segments cannot be stretched by choosing different path projections.
+    for (const auto& entry : layout) {
+        const auto& segments = entry.second;
+        if (segments.empty() ||
+            componentNumber[segments.front()] != referenceComponent)
+            continue;
+
+        bool isReferenceNode = false;
+        for (ogdf::node segment : segments) {
+            if (isReferencePoint[segment]) {
+                isReferenceNode = true;
+                break;
+            }
+        }
+
+        if (isReferenceNode) {
+            for (ogdf::node segment : segments) {
+                graphAttributes.x(segment) = referenceTargetX[segment];
+                graphAttributes.y(segment) = 0.0;
+            }
+            continue;
+        }
+
+        DPoint sourceCenter(0.0, 0.0);
+        for (ogdf::node segment : segments) {
+            sourceCenter.m_x += graphAttributes.x(segment);
+            sourceCenter.m_y += graphAttributes.y(segment);
+        }
+        sourceCenter.m_x /= static_cast<double>(segments.size());
+        sourceCenter.m_y /= static_cast<double>(segments.size());
+
+        ReferenceFlatteningFrame frame;
+        if (!findReferenceFlatteningFrame(sourceCenter, pathPoints, frame))
+            continue;
+
+        for (ogdf::node segment : segments) {
+            double relativeX = graphAttributes.x(segment) - sourceCenter.m_x;
+            double relativeY = graphAttributes.y(segment) - sourceCenter.m_y;
+            graphAttributes.x(segment) =
+                frame.targetX +
+                frame.sourceTangentX * relativeX +
+                frame.sourceTangentY * relativeY;
+            graphAttributes.y(segment) =
+                frame.targetY -
+                frame.sourceTangentY * relativeX +
+                frame.sourceTangentX * relativeY;
+        }
+    }
+
+    return referenceComponent;
+}
+
 // Rectangle calculation and packing helpers
 static fmmm::Rectangle calculateBoundingRectangle(const GraphAttributes& GA,
                                                   const List<ogdf::node>& nodesInCC,
@@ -350,6 +587,7 @@ static List<fmmm::Rectangle> rotateComponentsAndCalculateBoundingRectangles(
         const Array<List<ogdf::node>>& nodesInCC,
         double componentSeparation,
         double aspectRatio,
+        int fixedOrientationComponent,
         int stepsForRotatingComponents = 50) {
     int numCCs = nodesInCC.size();
     const Graph& G = GA.constGraph();
@@ -366,8 +604,10 @@ static List<fmmm::Rectangle> rotateComponentsAndCalculateBoundingRectangles(
         for (ogdf::node v : nodesInCC[i])
             old_coords[v] = best_coords[v] = GA.point(v);
 
-        // Rotate the components
-        for (int j = 1; j <= stepsForRotatingComponents; j++) {
+        // The reference component must remain horizontal after linearization.
+        int rotationSteps =
+            i == fixedOrientationComponent ? 0 : stepsForRotatingComponents;
+        for (int j = 1; j <= rotationSteps; j++) {
             double angle = Math::pi_2 * (double(j) / double(stepsForRotatingComponents + 1));
             double sin_j = sin(angle);
             double cos_j = cos(angle);
@@ -406,7 +646,9 @@ static List<fmmm::Rectangle> rotateComponentsAndCalculateBoundingRectangles(
 
         // Tip rectangle if needed
         double ratio = r_best.get_width() / r_best.get_height();
-        if ((aspectRatio < 1 && ratio > 1) || (aspectRatio >= 1 && ratio < 1)) {
+        if (i != fixedOrientationComponent &&
+            ((aspectRatio < 1 && ratio > 1) ||
+             (aspectRatio >= 1 && ratio < 1))) {
             for (ogdf::node v : nodesInCC[i]) {
                 DPoint new_pos;
                 new_pos.m_x = best_coords[v].m_y * (-1);
@@ -439,15 +681,18 @@ static List<fmmm::Rectangle> rotateComponentsAndCalculateBoundingRectangles(
 static void reassembleDrawings(GraphAttributes& GA,
                               double componentSeparation,
                               double aspectRatio,
-                              const Array<List<ogdf::node>>& nodesInCC) {
+                              const Array<List<ogdf::node>>& nodesInCC,
+                              int fixedOrientationComponent) {
     auto R = rotateComponentsAndCalculateBoundingRectangles(GA, nodesInCC,
-                                                            componentSeparation, aspectRatio);
+        componentSeparation, aspectRatio, fixedOrientationComponent);
 
     double aspect_ratio_area, bounding_rectangles_area;
     fmmm::MAARPacking().pack_rectangles_using_Best_Fit_strategy(
         R, aspectRatio,
         ogdf::FMMMOptions::PreSort::DecreasingHeight,
-        ogdf::FMMMOptions::TipOver::NoGrowingRow,
+        fixedOrientationComponent >= 0
+            ? ogdf::FMMMOptions::TipOver::None
+            : ogdf::FMMMOptions::TipOver::NoGrowingRow,
         aspect_ratio_area, bounding_rectangles_area);
 
     for (const auto& r : R) {
@@ -475,6 +720,7 @@ namespace layout {
 GraphLayout layoutGraph(const AssemblyGraph& graph,
                        int graphLayoutQuality,
                        bool useLinearLayout,
+                       const std::vector<std::string>& referencePathNodeIds,
                        double componentSeparation,
                        double aspectRatio,
                        const LayoutSettings* settings) {
@@ -485,6 +731,10 @@ GraphLayout layoutGraph(const AssemblyGraph& graph,
     OGDFGraphLayout ogdfLayout;
 
     buildGraph(G, GA, edgeLengths, ogdfLayout, graph, settings, useLinearLayout);
+    bool useReferencePath =
+        useLinearLayout && !referencePathNodeIds.empty() &&
+        positionReferencePathInitially(graph, referencePathNodeIds, ogdfLayout,
+                                       GA, settings);
 
     // Split into connected components
     NodeArray<int> componentNumber(G);
@@ -531,7 +781,15 @@ GraphLayout layoutGraph(const AssemblyGraph& graph,
         }
     }
 
-    reassembleDrawings(GA, componentSeparation, aspectRatio, nodesInCC);
+    int referenceComponent = -1;
+    if (useReferencePath) {
+        referenceComponent = linearizeReferencePath(
+            graph, referencePathNodeIds, ogdfLayout, GA,
+            componentNumber, settings);
+    }
+
+    reassembleDrawings(GA, componentSeparation, aspectRatio, nodesInCC,
+                       referenceComponent);
 
     // Convert to GraphLayout
     GraphLayout result(graph);

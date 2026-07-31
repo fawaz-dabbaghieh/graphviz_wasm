@@ -41,6 +41,16 @@ export function stripNodeOrientation(nodeId: string): string {
     : nodeId
 }
 
+export function pathHasRepeatedSegments(nodeIds: string[]): boolean {
+  const visitedSegments = new Set<string>()
+  return nodeIds.some(nodeId => {
+    const segmentId = stripNodeOrientation(nodeId)
+    if (visitedSegments.has(segmentId)) return true
+    visitedSegments.add(segmentId)
+    return false
+  })
+}
+
 export function getReverseComplementNodeId(nodeId: string): string {
   if (nodeId.endsWith('+')) return `${nodeId.slice(0, -1)}-`
   if (nodeId.endsWith('-')) return `${nodeId.slice(0, -1)}+`
@@ -179,6 +189,22 @@ export function buildDisplayGraph(
   })
 
   return { nodes, nodesByKey, edges }
+}
+
+export function updateDisplayGraphNodePositions(
+  displayGraph: DisplayGraph,
+  nodePositions: Record<string, NodeSegment[]>,
+): DisplayGraph {
+  const nodes = displayGraph.nodes.map(displayNode => ({
+    ...displayNode,
+    segments: nodePositions[displayNode.representativeId] ?? [],
+  }))
+
+  return {
+    nodes,
+    nodesByKey: new Map(nodes.map(node => [node.key, node])),
+    edges: displayGraph.edges,
+  }
 }
 
 export function resolveDisplaySegments(

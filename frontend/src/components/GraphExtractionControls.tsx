@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { IndexedGraph, RegionPath } from '../types'
 
 interface GraphExtractionControlsProps {
@@ -69,6 +69,7 @@ export function GraphExtractionControls({
   isExtracting,
 }: GraphExtractionControlsProps) {
   const [graphPanelExpanded, setGraphPanelExpanded] = useState(true)
+  const [coordinateTrackQuery, setCoordinateTrackQuery] = useState('')
   const selectedRegionPath = regionPaths[selectedRegionPathIndex]
   const controlsDisabled =
     isExtracting ||
@@ -76,6 +77,36 @@ export function GraphExtractionControls({
     graphs.length === 0 ||
     !supportsExtraction
   const useManualRegion = supportsExtraction && regionPaths.length === 0
+  const filteredRegionPaths = useMemo(() => {
+    const query = coordinateTrackQuery.trim().toLocaleLowerCase()
+
+    // Retain original indices because the parent stores the selection by index.
+    return regionPaths
+      .map((regionPath, index) => ({ regionPath, index }))
+      .filter(({ regionPath }) => {
+        if (!query) {
+          return true
+        }
+
+        return [
+          regionPath.label,
+          regionPath.source,
+          regionPath.reference,
+          regionPath.haplotype,
+          regionPath.sequence,
+        ].some(value => value.toLocaleLowerCase().includes(query))
+      })
+  }, [coordinateTrackQuery, regionPaths])
+  const selectedRegionPathIsVisible = filteredRegionPaths.some(
+    ({ index }) => index === selectedRegionPathIndex,
+  )
+  const regionPathSelectValue = selectedRegionPathIsVisible
+    ? String(selectedRegionPathIndex)
+    : ''
+
+  useEffect(() => {
+    setCoordinateTrackQuery('')
+  }, [selectedGraphId])
 
   return (
     <div className="layout-controls graph-extraction-controls">
@@ -226,11 +257,48 @@ export function GraphExtractionControls({
                 </div>
               </div>
               <div className="control-group">
+                <label htmlFor="region-path-search">
+                  Search Coordinate Tracks
+                </label>
+                <input
+                  id="region-path-search"
+                  className="control-input"
+                  type="search"
+                  value={coordinateTrackQuery}
+                  onChange={event =>
+                    setCoordinateTrackQuery(event.currentTarget.value)
+                  }
+                  onKeyDown={event => {
+                    if (event.key !== 'Enter') {
+                      return
+                    }
+
+                    event.preventDefault()
+                    const firstMatch = filteredRegionPaths[0]
+                    if (firstMatch) {
+                      onSelectedRegionPathIndexChange(firstMatch.index)
+                    }
+                  }}
+                  placeholder="Type a path, sample, or sequence name"
+                  disabled={
+                    controlsDisabled ||
+                    isLoadingRegionPaths ||
+                    regionPaths.length === 0
+                  }
+                />
+                {regionPaths.length > 0 && (
+                  <div className="control-hint">
+                    {filteredRegionPaths.length.toLocaleString()} of{' '}
+                    {regionPaths.length.toLocaleString()} tracks
+                  </div>
+                )}
+              </div>
+              <div className="control-group">
                 <label htmlFor="region-path-select">Coordinate Track</label>
                 <select
                   id="region-path-select"
                   className="control-select"
-                  value={String(selectedRegionPathIndex)}
+                  value={regionPathSelectValue}
                   onChange={event =>
                     onSelectedRegionPathIndexChange(
                       Number(event.currentTarget.value),
@@ -248,12 +316,22 @@ export function GraphExtractionControls({
                         ? 'Loading coordinate tracks...'
                         : 'No coordinate tracks found'}
                     </option>
+                  ) : filteredRegionPaths.length === 0 ? (
+                    <option value="">No matching coordinate tracks</option>
                   ) : (
-                    regionPaths.map((regionPath, index) => (
-                      <option key={`${regionPath.label}-${index}`} value={index}>
-                        {regionPath.label}
-                      </option>
-                    ))
+                    <>
+                      {!selectedRegionPathIsVisible && (
+                        <option value="">Choose a matching track</option>
+                      )}
+                      {filteredRegionPaths.map(({ regionPath, index }) => (
+                        <option
+                          key={`${regionPath.label}-${index}`}
+                          value={index}
+                        >
+                          {regionPath.label}
+                        </option>
+                      ))}
+                    </>
                   )}
                 </select>
                 {selectedGraphIsLocal ? (

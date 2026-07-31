@@ -194,7 +194,8 @@ await layout.init();
 
 const result = layout.computeLayout(graphData, {
   quality: 2,
-  linearLayout: false,
+  linearLayout: true,
+  referencePathName: 'CHM13#0#chr22',
   componentSeparation: 15.0
 });
 

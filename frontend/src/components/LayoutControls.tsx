@@ -1,5 +1,10 @@
-import { useState } from 'react'
-import type { LayoutOptions, ColorScheme } from '../types'
+import { useMemo, useState } from 'react'
+import type {
+  LayoutOptions,
+  ColorScheme,
+  GraphPath,
+} from '../types'
+import { pathHasRepeatedSegments } from '../utils/displayGraph'
 import {
   MIN_ZOOM,
   MAX_ZOOM,
@@ -31,6 +36,7 @@ interface LayoutControlsProps {
   drawPaths: boolean
   onDrawPathsChange: (draw: boolean) => void
   hasPathsInGraph: boolean
+  paths: GraphPath[]
 }
 
 export function LayoutControls({
@@ -53,12 +59,23 @@ export function LayoutControls({
   drawPaths,
   onDrawPathsChange,
   hasPathsInGraph,
+  paths,
 }: LayoutControlsProps) {
   // The control panel is split into a "general" section for day-to-day viewing
   // tweaks and an "advanced" section for layout parameters that can change the
   // overall geometry more dramatically.
   const [generalExpanded, setGeneralExpanded] = useState(true)
   const [advancedExpanded, setAdvancedExpanded] = useState(false)
+  const repeatedReferencePathNames = useMemo(() => {
+    const repeatedPaths = new Set<string>()
+
+    for (const path of paths) {
+      if (pathHasRepeatedSegments(path.nodeIds))
+        repeatedPaths.add(path.name)
+    }
+
+    return repeatedPaths
+  }, [paths])
 
   return (
     <div className="layout-controls">
@@ -173,9 +190,58 @@ export function LayoutControls({
                 Linear Layout
               </label>
               <div className="control-hint">
-                Use linear positioning instead of force-directed
+                Use node-ID ordering, or straighten a selected reference path
+                after force-directed layout.
               </div>
             </div>
+
+            {options.linearLayout && hasPathsInGraph && (
+              <div className="control-group">
+                <label htmlFor="reference-path-select">
+                  <strong>Reference Path:</strong>
+                </label>
+                <select
+                  id="reference-path-select"
+                  className="control-select"
+                  value={options.referencePathName}
+                  onChange={event =>
+                    onChange({
+                      ...options,
+                      referencePathName: event.currentTarget.value,
+                    })
+                  }
+                  disabled={isComputing}
+                >
+                  <option value="">Node ID order</option>
+                  {paths.map(path => {
+                    const hasRepeatedSegments =
+                      repeatedReferencePathNames.has(path.name)
+                    return (
+                      <option
+                        key={path.name}
+                        value={path.name}
+                        disabled={hasRepeatedSegments}
+                      >
+                        {path.name}
+                        {hasRepeatedSegments
+                          ? ' (repeated segments - unavailable)'
+                          : ''}
+                      </option>
+                    )
+                  })}
+                </select>
+                <div className="control-hint">
+                  Keep the selected path horizontal in traversal order.
+                </div>
+                {repeatedReferencePathNames.size > 0 && (
+                  <div className="control-error">
+                    {repeatedReferencePathNames.size} path
+                    {repeatedReferencePathNames.size === 1 ? '' : 's'} cannot be
+                    used as a reference because they repeat a segment.
+                  </div>
+                )}
+              </div>
+            )}
 
             <div className="control-group">
               <label>
