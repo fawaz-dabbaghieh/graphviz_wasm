@@ -44,12 +44,18 @@ async function readBackendError(response: Response): Promise<string> {
   return response.text()
 }
 
+function getConfiguredBackendUrl(): string {
+  return import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000'
+}
+
 function getDefaultBackendUrl(): string {
-  return (
-    localStorage.getItem('backendUrl') ||
-    import.meta.env.VITE_BACKEND_URL ||
-    'http://localhost:8000'
-  )
+  // Host-mode development uses the Vite API proxy. Prefer that configured URL
+  // over a stale LAN address saved by an earlier browser session.
+  if (import.meta.env.VITE_PREFER_BACKEND_URL === 'true') {
+    return getConfiguredBackendUrl()
+  }
+
+  return localStorage.getItem('backendUrl') || getConfiguredBackendUrl()
 }
 
 function normalizeBackendUrl(url: string): string {
@@ -224,9 +230,7 @@ function App({ worker }: AppProps) {
   }, [backendUrlInput])
 
   const handleResetBackendUrl = useCallback(() => {
-    const defaultBackendUrl = normalizeBackendUrl(
-      import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000',
-    )
+    const defaultBackendUrl = normalizeBackendUrl(getConfiguredBackendUrl())
 
     localStorage.removeItem('backendUrl')
     setBackendUrl(defaultBackendUrl)
