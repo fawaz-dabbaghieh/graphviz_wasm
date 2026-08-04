@@ -53,6 +53,12 @@ conda env create -f environment.yml
 conda activate graphviz-wasm
 ```
 
+For an existing environment, install newly added packages with:
+
+```bash
+conda env update -f environment.yml
+```
+
 Start both the backend and frontend from the repository root:
 
 ```bash
@@ -65,8 +71,8 @@ Open the frontend URL printed by Vite, usually:
 http://127.0.0.1:5173
 ```
 
-The script uses `gfaidx` from the active Conda environment and sets the
-frontend backend URL to `http://127.0.0.1:8000`.
+The script requires `gfaidx` from the active Conda environment, verifies that it
+can run, and sets the frontend backend URL to `http://127.0.0.1:8000`.
 
 To test from another device on the same network:
 

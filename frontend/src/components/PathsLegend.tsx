@@ -8,6 +8,8 @@ interface PathsLegendProps {
   onTogglePath: (pathName: string) => void
   onSelectAll: () => void
   onDeselectAll: () => void
+  filterToSelectedPaths: boolean
+  onFilterToSelectedPathsChange: (enabled: boolean) => void
   onColorPathNodes: (pathName: string, color: string) => number
   onClearNodeColors: () => void
 }
@@ -43,6 +45,8 @@ export function PathsLegend({
   onTogglePath,
   onSelectAll,
   onDeselectAll,
+  filterToSelectedPaths,
+  onFilterToSelectedPathsChange,
   onColorPathNodes,
   onClearNodeColors,
 }: PathsLegendProps) {
@@ -205,6 +209,32 @@ export function PathsLegend({
         >
           Clear node colors
         </button>
+        <label
+          title={
+            selectedPathNames.length === 0
+              ? 'Select at least one path first'
+              : 'Hide nodes and edges not traversed by the selected paths'
+          }
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '7px',
+            color: isDarkMode ? '#ccc' : '#555',
+            cursor: selectedPathNames.length === 0 ? 'not-allowed' : 'pointer',
+            fontSize: '12px',
+            opacity: selectedPathNames.length === 0 ? 0.6 : 1,
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={filterToSelectedPaths}
+            disabled={selectedPathNames.length === 0}
+            onChange={event =>
+              onFilterToSelectedPathsChange(event.currentTarget.checked)
+            }
+          />
+          <span>Selected paths only</span>
+        </label>
         <span
           style={{
             color: isDarkMode ? '#aaa' : '#666',

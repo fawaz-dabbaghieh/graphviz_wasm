@@ -11,4 +11,4 @@ dependencies:
   - binaryen =117
   - fastapi
   - uvicorn-standard
-  - gfaidx
+  - gfaidx >=1.7.0

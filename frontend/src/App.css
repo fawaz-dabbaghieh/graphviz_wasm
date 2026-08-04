@@ -468,19 +468,55 @@ body:has(.app.dark-mode) {
   margin-bottom: 0;
 }
 
-.graph-control-form {
-  padding-top: 14px;
-  margin-top: 14px;
-  border-top: 1px solid #eee;
+.graph-selection-section {
+  margin: 0;
+  padding: 0;
 }
 
-.app.dark-mode .graph-control-form {
-  border-top-color: #444;
+.graph-selection-section + .graph-selection-section {
+  padding-top: 18px;
+  margin-top: 18px;
+  border-top: 2px solid #bbb;
 }
 
-.graph-control-form h4 {
-  margin: 0 0 12px 0;
-  font-size: 14px;
+.app.dark-mode .graph-selection-section + .graph-selection-section {
+  border-top-color: #555;
+}
+
+.graph-selection-section h4 {
+  margin: 0 0 14px 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.control-group .checkbox-control-label,
+.control-group .extraction-mode-options label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.control-group .checkbox-control-label input,
+.control-group .extraction-mode-options input {
+  margin: 0;
+}
+
+.extraction-mode-options {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin-bottom: 6px;
+}
+
+.control-group .extraction-mode-options label {
+  margin: 0;
+  cursor: pointer;
+}
+
+.control-group .extraction-mode-options label:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.6;
 }
 
 .control-select,
@@ -701,7 +737,9 @@ body:has(.app.dark-mode) {
 
 .annotation-config-grid {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) 95px 95px 120px auto;
+  grid-template-columns:
+    minmax(190px, 1fr) repeat(4, minmax(85px, 105px))
+    110px auto;
   gap: 12px;
   align-items: start;
   margin: 12px 0;
@@ -719,6 +757,10 @@ body:has(.app.dark-mode) {
 
 .annotation-selection {
   margin-bottom: 10px;
+}
+
+.annotation-mapping-hint {
+  margin-top: 4px;
 }
 
 .annotation-table-wrap {
@@ -783,6 +825,15 @@ body:has(.app.dark-mode) {
   background: #f0f0f0;
 }
 
+.table-action-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.table-action-button:disabled:hover {
+  background: white;
+}
+
 .app.dark-mode .table-action-button {
   border-color: #555;
   background: #2a2a2a;
@@ -791,6 +842,10 @@ body:has(.app.dark-mode) {
 
 .app.dark-mode .table-action-button:hover {
   background: #404040;
+}
+
+.app.dark-mode .table-action-button:disabled:hover {
+  background: #2a2a2a;
 }
 
 .annotation-placeholder {

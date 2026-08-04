@@ -83,7 +83,6 @@ detect_lan_ip() {
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKEND_PORT="${BACKEND_PORT:-8000}"
 FRONTEND_PORT="${FRONTEND_PORT:-5173}"
-BUNDLED_GFAIDX="${ROOT_DIR}/backend/gfaidx_bin/gfaidx"
 
 if [[ "${LAN_MODE}" == true ]]; then
   BACKEND_HOST="${BACKEND_HOST:-0.0.0.0}"
@@ -125,12 +124,38 @@ else
   PREFER_CONFIGURED_BACKEND=false
 fi
 
-if [[ -x "${BUNDLED_GFAIDX}" ]]; then
-  GFAIDX_PATH="${BUNDLED_GFAIDX}"
-elif command -v gfaidx >/dev/null 2>&1; then
-  GFAIDX_PATH="$(command -v gfaidx)"
-else
-  echo "gfaidx was not found in backend/gfaidx_bin or on PATH." >&2
+if [[ -z "${CONDA_PREFIX:-}" ]]; then
+  echo "No active Conda environment was detected." >&2
+  echo "Create and activate the project environment first:" >&2
+  echo "  conda env create -f environment.yml" >&2
+  echo "  conda activate graphviz-wasm" >&2
+  exit 1
+fi
+
+if ! command -v gfaidx >/dev/null 2>&1; then
+  echo "gfaidx was not found in the active Conda environment: ${CONDA_PREFIX}" >&2
+  echo "Install it before starting the app:" >&2
+  echo "  conda install -c conda-forge -c bioconda 'gfaidx>=1.7.0'" >&2
+  echo "Or update this environment from the repository file:" >&2
+  echo "  conda env update -f environment.yml" >&2
+  exit 1
+fi
+
+GFAIDX_PATH="$(command -v gfaidx)"
+case "${GFAIDX_PATH}" in
+  "${CONDA_PREFIX}/bin/"*) ;;
+  *)
+    echo "gfaidx resolves outside the active Conda environment:" >&2
+    echo "  ${GFAIDX_PATH}" >&2
+    echo "Install gfaidx into ${CONDA_PREFIX} before starting the app:" >&2
+    echo "  conda install -c conda-forge -c bioconda 'gfaidx>=1.7.0'" >&2
+    exit 1
+    ;;
+esac
+
+if ! GFAIDX_VERSION="$("${GFAIDX_PATH}" --version 2>&1)"; then
+  echo "The Conda gfaidx executable could not be run: ${GFAIDX_PATH}" >&2
+  echo "${GFAIDX_VERSION}" >&2
   exit 1
 fi
 
@@ -174,7 +199,7 @@ cd "${ROOT_DIR}"
 
 echo "Starting backend on ${BACKEND_HOST}:${BACKEND_PORT}"
 echo "Using gfaidx: ${GFAIDX_PATH}"
-"${GFAIDX_PATH}" --version || true
+echo "${GFAIDX_VERSION}"
 GFAIDX_BINARY="${GFAIDX_PATH}" \
   python -m uvicorn backend.app.main:app \
     --host "${BACKEND_HOST}" \

@@ -6,7 +6,7 @@ server-side indexed graphs and return extracted GFA subgraphs to the frontend.
 Current minimal shape:
 
 - `app/main.py`: API entry point.
-- `gfaidx_bin/gfaidx`: symlink or binary used for extraction.
+- `gfaidx` from the active Conda environment: executable used for extraction.
 - `graphs.tsv`: server-controlled list of indexed graphs exposed to the UI.
 - `annotations.tsv`: server-controlled list of BED/TSV annotation files exposed
   to the UI.
@@ -54,11 +54,10 @@ conda activate graphviz-wasm
 This starts the FastAPI backend, starts the Vite frontend, and uses `gfaidx`
 from the active Conda environment.
 
-If you want to run the backend manually, install the backend dependencies inside
-your Conda environment if they are not already available:
+If this environment was created before `gfaidx` was added, update it first:
 
 ```bash
-pip install -r backend/requirements.txt
+conda env update -f environment.yml
 ```
 
 Then run the API server:
@@ -85,7 +84,7 @@ dropdown and `POST /api/extract-subgraph` for node-neighborhood extraction. The
 backend runs a controlled command equivalent to:
 
 ```bash
-backend/gfaidx_bin/gfaidx get_subgraph \
+gfaidx get_subgraph \
   backend/indexed_example/chr22.indexed.gfa.gz \
   START_NODE \
   TMP_OUTPUT.gfa \
@@ -108,7 +107,7 @@ GET /api/graphs/{graph_id}/region-paths
 The backend runs:
 
 ```bash
-backend/gfaidx_bin/gfaidx get_region \
+gfaidx get_region \
   backend/indexed_example/chr22.indexed.gfa.gz \
   --print_path_names
 ```
@@ -117,7 +116,7 @@ Then the frontend calls `POST /api/extract-region` with a selected coordinate
 track, start, end, and max-node limit. The backend runs a command equivalent to:
 
 ```bash
-backend/gfaidx_bin/gfaidx get_region \
+gfaidx get_region \
   --reference REFERENCE \
   --max_nodes MAX_NODES \
   [--with_coords] \

@@ -75,9 +75,9 @@ export interface RegionPath {
 
 export interface BedAnnotation {
   id: string
-  chromosome: string
-  start: number
-  end: number
+  chromosome: string | null
+  start: number | null
+  end: number | null
   lineNumber: number
   columns: BedAnnotationColumn[]
 }

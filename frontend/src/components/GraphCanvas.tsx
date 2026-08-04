@@ -17,6 +17,7 @@ import type {
 } from '../types'
 import {
   buildDisplayGraph,
+  filterDisplayGraphByPaths,
   updateDisplayGraphNodePositions,
   resolveDisplaySegments,
   stripNodeOrientation,
@@ -44,6 +45,7 @@ interface GraphCanvasProps {
   // The selector hands the canvas the exact set of path IDs that should remain
   // visible without changing the underlying graph model.
   visiblePathIds?: Set<string>
+  filterToSelectedPaths?: boolean
   nodeColorOverrides?: Record<string, string>
   onUseAsStartNode?: (nodeId: string) => void
   debugHitboxes?: boolean // Hidden flag to visualize edge hit areas
@@ -109,6 +111,7 @@ function GraphCanvasComponent({
   labelLengthThreshold = 0,
   drawPaths = true,
   visiblePathIds,
+  filterToSelectedPaths = false,
   nodeColorOverrides,
   onUseAsStartNode,
   debugHitboxes = false,
@@ -167,13 +170,29 @@ function GraphCanvasComponent({
     () => buildDisplayGraph(graph, layoutResult.nodePositions),
     [graph, layoutResult.nodePositions],
   )
+  const visibleDisplayGraphTopology = useMemo(() => {
+    if (!filterToSelectedPaths || !visiblePathIds) {
+      return displayGraphTopology
+    }
+
+    return filterDisplayGraphByPaths(
+      displayGraphTopology,
+      graph.paths ?? [],
+      visiblePathIds,
+    )
+  }, [
+    displayGraphTopology,
+    filterToSelectedPaths,
+    graph.paths,
+    visiblePathIds,
+  ])
   const displayGraph = useMemo(
     () =>
       updateDisplayGraphNodePositions(
-        displayGraphTopology,
+        visibleDisplayGraphTopology,
         activeNodePositions,
       ),
-    [activeNodePositions, displayGraphTopology],
+    [activeNodePositions, visibleDisplayGraphTopology],
   )
   const boundsRef = useRef<{
     minX: number
@@ -417,6 +436,15 @@ function GraphCanvasComponent({
       visiblePathTraversalsByList.get(pathTraversals) ?? NO_PATH_TRAVERSALS,
     [visiblePathTraversalsByList],
   )
+
+  useEffect(() => {
+    // Filtering can invalidate array-based edge hover state and hide a
+    // selected node, so discard transient interactions when its inputs change.
+    setHoveredNode(null)
+    setHoveredEdge(null)
+    setSelectedNode(null)
+    setContextMenu({ visible: false, x: 0, y: 0, nodeId: null })
+  }, [visibleDisplayGraphTopology])
 
   // Colors depend on graph data and user settings, not the viewport. Cache
   // them so wheel/pan redraws only perform a map lookup per visible node.

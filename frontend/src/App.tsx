@@ -112,6 +112,7 @@ function App({ worker }: AppProps) {
   // Keep path visibility in the React layer so toggling paths never requires
   // recomputing the layout itself.
   const [selectedPathNames, setSelectedPathNames] = useState<string[]>([])
+  const [filterToSelectedPaths, setFilterToSelectedPaths] = useState(false)
   const [nodeColorOverrides, setNodeColorOverrides] = useState<
     Record<string, string>
   >({})
@@ -126,9 +127,10 @@ function App({ worker }: AppProps) {
   const [isLoadingRegionPaths, setIsLoadingRegionPaths] = useState(false)
   const [regionPathError, setRegionPathError] = useState<string | null>(null)
   const [subgraphStartNode, setSubgraphStartNode] = useState('')
-  const [extractionMaxNodes, setExtractionMaxNodes] = useState('200')
+  const [subgraphMaxNodes, setSubgraphMaxNodes] = useState('200')
+  const [regionMaxNodes, setRegionMaxNodes] = useState('200')
   const [extractionWithCoords, setExtractionWithCoords] = useState(false)
-  const [extractAllHaplotypes, setExtractAllHaplotypes] = useState(false)
+  const [extractAllHaplotypes, setExtractAllHaplotypes] = useState(true)
   const [manualRegionReference, setManualRegionReference] = useState('')
   const [manualRegionSequence, setManualRegionSequence] = useState('')
   const [regionStart, setRegionStart] = useState('')
@@ -481,6 +483,18 @@ function App({ worker }: AppProps) {
 
   const handleSelectBedAnnotation = useCallback(
     (annotation: BedAnnotation, flankBp: number) => {
+      if (
+        !annotation.chromosome ||
+        annotation.start === null ||
+        annotation.end === null ||
+        annotation.end <= annotation.start
+      ) {
+        setLoadError(
+          'Choose valid chromosome, start, and end columns before using this annotation.',
+        )
+        return
+      }
+
       const normalizeName = (name: string) =>
         name.trim().toLowerCase().replace(/^chr/, '')
       const annotationChromosome = normalizeName(annotation.chromosome)
@@ -604,7 +618,7 @@ function App({ worker }: AppProps) {
   // the returned GFA text through the same parser used for uploaded files.
   const handleExtractSubgraph = useCallback(async () => {
     const startNode = subgraphStartNode.trim()
-    const maxNodes = Number(extractionMaxNodes)
+    const maxNodes = Number(subgraphMaxNodes)
 
     if (!selectedIndexedGraph || !selectedGraphSupportsExtraction) {
       setLoadError('Choose an indexed graph before extracting a subgraph')
@@ -659,11 +673,11 @@ function App({ worker }: AppProps) {
     }
   }, [
     backendUrl,
-    extractionMaxNodes,
     extractionWithCoords,
     loadGFAFromText,
     selectedGraphSupportsExtraction,
     selectedIndexedGraph,
+    subgraphMaxNodes,
     subgraphStartNode,
   ])
 
@@ -673,7 +687,7 @@ function App({ worker }: AppProps) {
     const sequence = selectedRegionPath?.sequence ?? manualRegionSequence.trim()
     const start = Number(regionStart)
     const end = Number(regionEnd)
-    const maxNodes = Number(extractionMaxNodes)
+    const maxNodes = Number(regionMaxNodes)
 
     if (!selectedIndexedGraph || !selectedGraphSupportsExtraction) {
       setLoadError('Choose an indexed graph before extracting a region')
@@ -758,12 +772,12 @@ function App({ worker }: AppProps) {
   }, [
     backendUrl,
     extractAllHaplotypes,
-    extractionMaxNodes,
     extractionWithCoords,
     loadGFAFromText,
     manualRegionReference,
     manualRegionSequence,
     regionEnd,
+    regionMaxNodes,
     regionPaths,
     regionStart,
     selectedGraphSupportsExtraction,
@@ -830,6 +844,7 @@ function App({ worker }: AppProps) {
     setNodeLocatorInput('')
     setNodeLocatorError(null)
     setFocusNodeId(null)
+    setFilterToSelectedPaths(false)
     setLayoutOptions(currentOptions => {
       if (!currentOptions.referencePathName) return currentOptions
 
@@ -856,6 +871,14 @@ function App({ worker }: AppProps) {
     )
     setNodeColorOverrides({})
   }, [currentGraph])
+
+  useEffect(() => {
+    // Avoid an unexpectedly blank canvas if the final selected path is
+    // deselected or the Paths panel is closed.
+    if (!drawPaths || visiblePathNames.length === 0) {
+      setFilterToSelectedPaths(false)
+    }
+  }, [drawPaths, visiblePathNames.length])
 
   const handleColorPathNodes = useCallback(
     (pathName: string, color: string): number => {
@@ -1206,8 +1229,10 @@ function App({ worker }: AppProps) {
             selectedGraphIsLocal={selectedGraphIsLocal}
             graphListError={indexedGraphError}
             isLoadingGraphs={isLoadingIndexedGraphs}
-            maxNodes={extractionMaxNodes}
-            onMaxNodesChange={setExtractionMaxNodes}
+            nodeMaxNodes={subgraphMaxNodes}
+            onNodeMaxNodesChange={setSubgraphMaxNodes}
+            regionMaxNodes={regionMaxNodes}
+            onRegionMaxNodesChange={setRegionMaxNodes}
             withCoords={extractionWithCoords}
             onWithCoordsChange={setExtractionWithCoords}
             nodeStart={subgraphStartNode}
@@ -1373,6 +1398,7 @@ function App({ worker }: AppProps) {
                     labelLengthThreshold={labelLengthThreshold}
                     drawPaths={drawPaths}
                     visiblePathIds={visiblePathNameSet}
+                    filterToSelectedPaths={filterToSelectedPaths}
                     nodeColorOverrides={nodeColorOverrides}
                     onUseAsStartNode={setSubgraphStartNode}
                   />
@@ -1398,6 +1424,8 @@ function App({ worker }: AppProps) {
                           )
                         }
                         onDeselectAll={() => setSelectedPathNames([])}
+                        filterToSelectedPaths={filterToSelectedPaths}
+                        onFilterToSelectedPathsChange={setFilterToSelectedPaths}
                         onColorPathNodes={handleColorPathNodes}
                         onClearNodeColors={handleClearPathNodeColors}
                       />
