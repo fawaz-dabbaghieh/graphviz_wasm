@@ -38,14 +38,18 @@ app.add_middleware(
 # Keep all executable and graph paths server-controlled. The browser can choose
 # from graph IDs, but it never gets to provide filesystem paths or shell text.
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-GFAIDX_BINARY = Path(
-    os.environ.get(
-        "GFAIDX_BINARY",
-        str(BACKEND_ROOT / "gfaidx_bin" / "gfaidx")
-        if (BACKEND_ROOT / "gfaidx_bin" / "gfaidx").exists()
-        else shutil.which("gfaidx") or str(BACKEND_ROOT / "gfaidx_bin" / "gfaidx"),
-    )
-)
+
+
+def resolve_gfaidx_binary() -> Path | None:
+    configured_binary = os.environ.get("GFAIDX_BINARY")
+    if configured_binary:
+        return Path(configured_binary).expanduser()
+
+    path_binary = shutil.which("gfaidx")
+    return Path(path_binary) if path_binary else None
+
+
+GFAIDX_BINARY = resolve_gfaidx_binary()
 GRAPH_REGISTRY_PATH = BACKEND_ROOT / "graphs.tsv"
 ANNOTATION_REGISTRY_PATH = BACKEND_ROOT / "annotations.tsv"
 GFAIDX_EXTRACTION_TIMEOUT_SECONDS = 300
@@ -94,6 +98,10 @@ class SubgraphRequest(BaseModel):
     graph_id: str = Field(..., description="Whitelisted graph ID to query")
     start_node: str = Field(..., min_length=1, description="Starting node ID")
     max_nodes: int = Field(..., ge=1)
+    with_coords: bool = Field(
+        False,
+        description="Emit coordinate-bearing P/W subpaths",
+    )
 
 
 class RegionRequest(BaseModel):
@@ -101,8 +109,20 @@ class RegionRequest(BaseModel):
     sequence: str = Field(..., min_length=1, description="Reference sequence name")
     start: int = Field(..., ge=0, description="0-based inclusive start")
     end: int = Field(..., ge=1, description="0-based exclusive end")
-    max_nodes: int = Field(..., ge=1)
+    max_nodes: int | None = Field(
+        None,
+        ge=1,
+        description="BFS node limit; omitted when all_haplotypes is enabled",
+    )
     reference: str = Field("", description="Reference sample name")
+    with_coords: bool = Field(
+        False,
+        description="Emit coordinate-bearing P/W subpaths",
+    )
+    all_haplotypes: bool = Field(
+        False,
+        description="Extract exact anchor-supported haplotype spans instead of BFS",
+    )
 
 
 def command_output_from_error(exc: subprocess.CalledProcessError) -> str:
@@ -229,9 +249,21 @@ def get_annotation_entry(annotation_id: str) -> AnnotationRegistryEntry:
     return annotation_entry
 
 
-def ensure_gfaidx_binary() -> None:
-    if not GFAIDX_BINARY.exists():
-        raise HTTPException(status_code=500, detail="gfaidx binary was not found")
+def ensure_gfaidx_binary() -> Path:
+    if (
+        GFAIDX_BINARY is None
+        or not GFAIDX_BINARY.is_file()
+        or not os.access(GFAIDX_BINARY, os.X_OK)
+    ):
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "gfaidx was not found on PATH. Install it in the active Conda "
+                "environment before starting the backend."
+            ),
+        )
+
+    return GFAIDX_BINARY
 
 
 def read_gfaidx_output(output_path: Path) -> str:
@@ -339,12 +371,12 @@ def get_annotation(annotation_id: str) -> str:
 def list_region_paths(graph_id: str) -> list[RegionPathInfo]:
     """Return coordinate tracks available for gfaidx get_region."""
     graph_entry = get_graph_entry(graph_id)
-    ensure_gfaidx_binary()
+    gfaidx_binary = ensure_gfaidx_binary()
 
     try:
         result = subprocess.run(
             [
-                str(GFAIDX_BINARY),
+                str(gfaidx_binary),
                 "get_region",
                 str(graph_entry.path),
                 "--print_path_names",
@@ -379,7 +411,7 @@ def extract_subgraph(request: SubgraphRequest) -> str:
     if not request.start_node.strip():
         raise HTTPException(status_code=400, detail="Start node ID is required")
 
-    ensure_gfaidx_binary()
+    gfaidx_binary = ensure_gfaidx_binary()
 
     try:
         with tempfile.TemporaryDirectory(prefix="gfaidx-subgraph-") as tmp_dir:
@@ -389,16 +421,20 @@ def extract_subgraph(request: SubgraphRequest) -> str:
             # temporary file and then returns its contents. Keep the command as
             # an argument list so user-provided node IDs cannot become shell
             # syntax.
+            command = [
+                str(gfaidx_binary),
+                "get_subgraph",
+                str(graph_entry.path),
+                request.start_node.strip(),
+                str(output_path),
+                "--max_nodes",
+                str(request.max_nodes),
+            ]
+            if request.with_coords:
+                command.append("--with_coords")
+
             subprocess.run(
-                [
-                    str(GFAIDX_BINARY),
-                    "get_subgraph",
-                    str(graph_entry.path),
-                    request.start_node.strip(),
-                    str(output_path),
-                    "--max_nodes",
-                    str(request.max_nodes),
-                ],
+                command,
                 check=True,
                 capture_output=True,
                 text=True,
@@ -440,15 +476,29 @@ def extract_region(request: RegionRequest) -> str:
     if request.end <= request.start:
         raise HTTPException(status_code=400, detail="Region end must be greater than start")
 
-    ensure_gfaidx_binary()
+    if not request.all_haplotypes and request.max_nodes is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Max nodes is required for BFS region extraction",
+        )
+
+    gfaidx_binary = ensure_gfaidx_binary()
 
     region = f"{sequence}:{request.start}-{request.end}"
     command = [
-        str(GFAIDX_BINARY),
+        str(gfaidx_binary),
         "get_region",
-        "--max_nodes",
-        str(request.max_nodes),
     ]
+    # gfaidx ignores max_nodes in all-haplotype mode, so omit the argument
+    # completely and make the selected extraction strategy explicit.
+    if request.all_haplotypes:
+        command.append("--all_haplotypes")
+    else:
+        command.extend(["--max_nodes", str(request.max_nodes)])
+
+    if request.with_coords:
+        command.append("--with_coords")
+
     if reference:
         command.extend(["--reference", reference])
 

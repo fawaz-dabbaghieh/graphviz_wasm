@@ -1,4 +1,10 @@
-import type { Graph, GraphEdge, GraphNode, NodeSegment } from '../types'
+import type {
+  Graph,
+  GraphEdge,
+  GraphNode,
+  GraphPath,
+  NodeSegment,
+} from '../types'
 
 export interface DisplayNode {
   key: string
@@ -39,6 +45,16 @@ export function stripNodeOrientation(nodeId: string): string {
   return nodeId.endsWith('+') || nodeId.endsWith('-')
     ? nodeId.slice(0, -1)
     : nodeId
+}
+
+export function pathHasRepeatedSegments(nodeIds: string[]): boolean {
+  const visitedSegments = new Set<string>()
+  return nodeIds.some(nodeId => {
+    const segmentId = stripNodeOrientation(nodeId)
+    if (visitedSegments.has(segmentId)) return true
+    visitedSegments.add(segmentId)
+    return false
+  })
 }
 
 export function getReverseComplementNodeId(nodeId: string): string {
@@ -179,6 +195,53 @@ export function buildDisplayGraph(
   })
 
   return { nodes, nodesByKey, edges }
+}
+
+export function updateDisplayGraphNodePositions(
+  displayGraph: DisplayGraph,
+  nodePositions: Record<string, NodeSegment[]>,
+): DisplayGraph {
+  const nodes = displayGraph.nodes.map(displayNode => ({
+    ...displayNode,
+    segments: nodePositions[displayNode.representativeId] ?? [],
+  }))
+
+  return {
+    nodes,
+    nodesByKey: new Map(nodes.map(node => [node.key, node])),
+    edges: displayGraph.edges,
+  }
+}
+
+export function filterDisplayGraphByPaths(
+  displayGraph: DisplayGraph,
+  paths: GraphPath[],
+  selectedPathIds: Set<string>,
+): DisplayGraph {
+  const selectedNodeKeys = new Set<string>()
+
+  // Path node IDs include orientation, while the display graph collapses both
+  // orientations into one visible node.
+  for (const path of paths) {
+    if (!selectedPathIds.has(path.name)) continue
+
+    for (const nodeId of path.nodeIds) {
+      selectedNodeKeys.add(stripNodeOrientation(nodeId))
+    }
+  }
+
+  const nodes = displayGraph.nodes.filter(node => selectedNodeKeys.has(node.key))
+  const edges = displayGraph.edges.filter(edge =>
+    edge.pathTraversals.some(traversal =>
+      selectedPathIds.has(traversal.pathId),
+    ),
+  )
+
+  return {
+    nodes,
+    nodesByKey: new Map(nodes.map(node => [node.key, node])),
+    edges,
+  }
 }
 
 export function resolveDisplaySegments(

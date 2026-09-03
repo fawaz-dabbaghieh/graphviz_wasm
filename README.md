@@ -53,6 +53,12 @@ conda env create -f environment.yml
 conda activate graphviz-wasm
 ```
 
+For an existing environment, install newly added packages with:
+
+```bash
+conda env update -f environment.yml
+```
+
 Start both the backend and frontend from the repository root:
 
 ```bash
@@ -65,17 +71,26 @@ Open the frontend URL printed by Vite, usually:
 http://127.0.0.1:5173
 ```
 
-The script uses `gfaidx` from the active Conda environment and sets the
-frontend backend URL to `http://127.0.0.1:8000`.
+The script requires `gfaidx` from the active Conda environment, verifies that it
+can run, and sets the frontend backend URL to `http://127.0.0.1:8000`.
 
 To test from another device on the same network:
 
 ```bash
-BACKEND_HOST=0.0.0.0 FRONTEND_HOST=0.0.0.0 ./run_dev.sh
+./run_dev.sh --host
 ```
 
-Then open `http://YOUR_LAPTOP_IP:5173` on the other device and set the in-app
-Backend field to `http://YOUR_LAPTOP_IP:8000`.
+The script binds both services to all network interfaces, detects the laptop's
+LAN IP, and prints the frontend URL to open on another device. Browser API
+requests use the same frontend address and are proxied internally to FastAPI,
+so the other device only needs network access to the frontend port.
+
+If automatic address detection chooses the wrong network interface, specify the
+address explicitly:
+
+```bash
+LAN_IP=192.168.1.25 ./run_dev.sh --host
+```
 
 ### Manual Setup
 
@@ -165,8 +180,7 @@ backend currently ships with a `chr22` registry entry and refuses requests above
 ## Building
 
 ```bash
-cd bandage-layout-js
-./build.sh
+./layout_wasm/build.sh
 ```
 
 Requires:
@@ -186,7 +200,8 @@ await layout.init();
 
 const result = layout.computeLayout(graphData, {
   quality: 2,
-  linearLayout: false,
+  linearLayout: true,
+  referencePathName: 'CHM13#0#chr22',
   componentSeparation: 15.0
 });
 

@@ -17,8 +17,11 @@ import type {
 } from '../types'
 import {
   buildDisplayGraph,
+  filterDisplayGraphByPaths,
+  updateDisplayGraphNodePositions,
   resolveDisplaySegments,
   stripNodeOrientation,
+  type DisplayEdgeTraversal,
 } from '../utils/displayGraph'
 import { clampZoom } from '../utils/zoom'
 
@@ -42,6 +45,7 @@ interface GraphCanvasProps {
   // The selector hands the canvas the exact set of path IDs that should remain
   // visible without changing the underlying graph model.
   visiblePathIds?: Set<string>
+  filterToSelectedPaths?: boolean
   nodeColorOverrides?: Record<string, string>
   onUseAsStartNode?: (nodeId: string) => void
   debugHitboxes?: boolean // Hidden flag to visualize edge hit areas
@@ -54,6 +58,7 @@ const SEQUENCE_PREVIEW_SUFFIX_LENGTH = Math.floor(SEQUENCE_PREVIEW_CUTOFF / 2)
 // while retaining small trackpad deltas for continuous motion.
 const ROTATION_RADIANS_PER_PIXEL = 0.002
 const MAX_ROTATION_STEP = Math.PI / 15
+const NO_PATH_TRAVERSALS: DisplayEdgeTraversal[] = []
 
 // Keep accumulated angles bounded so trigonometric calculations remain stable
 // after long rotation sessions.
@@ -106,6 +111,7 @@ function GraphCanvasComponent({
   labelLengthThreshold = 0,
   drawPaths = true,
   visiblePathIds,
+  filterToSelectedPaths = false,
   nodeColorOverrides,
   onUseAsStartNode,
   debugHitboxes = false,
@@ -160,9 +166,33 @@ function GraphCanvasComponent({
     () => modifiedNodePositions || layoutResult.nodePositions,
     [layoutResult.nodePositions, modifiedNodePositions],
   )
+  const displayGraphTopology = useMemo(
+    () => buildDisplayGraph(graph, layoutResult.nodePositions),
+    [graph, layoutResult.nodePositions],
+  )
+  const visibleDisplayGraphTopology = useMemo(() => {
+    if (!filterToSelectedPaths || !visiblePathIds) {
+      return displayGraphTopology
+    }
+
+    return filterDisplayGraphByPaths(
+      displayGraphTopology,
+      graph.paths ?? [],
+      visiblePathIds,
+    )
+  }, [
+    displayGraphTopology,
+    filterToSelectedPaths,
+    graph.paths,
+    visiblePathIds,
+  ])
   const displayGraph = useMemo(
-    () => buildDisplayGraph(graph, activeNodePositions),
-    [graph, activeNodePositions],
+    () =>
+      updateDisplayGraphNodePositions(
+        visibleDisplayGraphTopology,
+        activeNodePositions,
+      ),
+    [activeNodePositions, visibleDisplayGraphTopology],
   )
   const boundsRef = useRef<{
     minX: number
@@ -357,38 +387,64 @@ function GraphCanvasComponent({
     width,
   ])
 
-  // Generate path colors (same logic as in draw function)
+  const pathColors = useMemo(() => {
+    const colors = new Map<string, string>()
+    const paths = graph.paths ?? []
+    const hueStep = paths.length > 0 ? 360 / paths.length : 0
+
+    paths.forEach((path, pathIndex) => {
+      colors.set(path.name, `hsl(${pathIndex * hueStep}, 70%, 50%)`)
+    })
+    return colors
+  }, [graph.paths])
+
   const getPathColor = useCallback(
-    (pathName: string): string => {
-      if (!graph.paths) return '#888'
-      const pathIndex = graph.paths.findIndex(p => p.name === pathName)
-      if (pathIndex === -1) return '#888'
-      const hueStep = 360 / graph.paths.length
-      const hue = pathIndex * hueStep
-      return `hsl(${hue}, 70%, 50%)`
-    },
-    [graph.paths],
+    (pathName: string): string => pathColors.get(pathName) ?? '#888',
+    [pathColors],
   )
+
+  const visiblePathTraversalsByList = useMemo(() => {
+    const visibleTraversals = new Map<
+      DisplayEdgeTraversal[],
+      DisplayEdgeTraversal[]
+    >()
+
+    for (const edge of displayGraphTopology.edges) {
+      if (
+        !drawPaths ||
+        edge.pathTraversals.length === 0 ||
+        visiblePathIds?.size === 0
+      ) {
+        visibleTraversals.set(edge.pathTraversals, NO_PATH_TRAVERSALS)
+      } else if (!visiblePathIds) {
+        visibleTraversals.set(edge.pathTraversals, edge.pathTraversals)
+      } else {
+        visibleTraversals.set(
+          edge.pathTraversals,
+          edge.pathTraversals.filter(traversal =>
+            visiblePathIds.has(traversal.pathId),
+          ),
+        )
+      }
+    }
+
+    return visibleTraversals
+  }, [displayGraphTopology.edges, drawPaths, visiblePathIds])
 
   const getVisiblePathTraversals = useCallback(
-    (pathTraversals: typeof displayGraph.edges[number]['pathTraversals']) => {
-      if (!drawPaths || pathTraversals.length === 0) {
-        return []
-      }
-
-      if (!visiblePathIds) {
-        return pathTraversals
-      }
-
-      // The single-mode display groups reverse-complement edges together, so
-      // path filtering must operate on the grouped traversal list rather than
-      // the old per-oriented-edge pathIds array.
-      return pathTraversals.filter(traversal =>
-        visiblePathIds.has(traversal.pathId),
-      )
-    },
-    [drawPaths, visiblePathIds],
+    (pathTraversals: DisplayEdgeTraversal[]) =>
+      visiblePathTraversalsByList.get(pathTraversals) ?? NO_PATH_TRAVERSALS,
+    [visiblePathTraversalsByList],
   )
+
+  useEffect(() => {
+    // Filtering can invalidate array-based edge hover state and hide a
+    // selected node, so discard transient interactions when its inputs change.
+    setHoveredNode(null)
+    setHoveredEdge(null)
+    setSelectedNode(null)
+    setContextMenu({ visible: false, x: 0, y: 0, nodeId: null })
+  }, [visibleDisplayGraphTopology])
 
   // Colors depend on graph data and user settings, not the viewport. Cache
   // them so wheel/pan redraws only perform a map lookup per visible node.
@@ -963,16 +1019,6 @@ function GraphCanvasComponent({
       }
     }
 
-    // Generate colors for paths (using a simple color scheme)
-    const pathColors = new Map<string, string>()
-    if (graph.paths) {
-      const hueStep = 360 / graph.paths.length
-      graph.paths.forEach((path, idx) => {
-        const hue = idx * hueStep
-        pathColors.set(path.name, `hsl(${hue}, 70%, 50%)`)
-      })
-    }
-
     // Draw single-mode base edges and then directional path overlays on top of
     // the same canonical geometry.
     displayGraph.edges.forEach((displayEdge, edgeIdx) => {
@@ -1199,6 +1245,7 @@ function GraphCanvasComponent({
     isDarkMode,
     getNodeColor,
     displayGraph,
+    pathColors,
     getVisiblePathTraversals,
     buildEdgeGeometry,
     getEdgeOffset,

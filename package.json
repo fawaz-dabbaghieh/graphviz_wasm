@@ -9,7 +9,7 @@
     "./worker": "./js/bandage-layout-worker-interface.js"
   },
   "scripts": {
-    "build": "./build.sh",
+    "build": "./layout_wasm/build.sh",
     "test": "node examples/node-example.js",
     "serve": "python3 -m http.server 8080"
   },
@@ -33,7 +33,7 @@
     "include/",
     "src/",
     "CMakeLists.txt",
-    "build.sh",
+    "layout_wasm/build.sh",
     "README.md"
   ],
   "engines": {

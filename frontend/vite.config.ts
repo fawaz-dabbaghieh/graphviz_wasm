@@ -1,18 +1,30 @@
-import { defineConfig } from 'vite'
+import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 
 // https://vite.dev/config/
-export default defineConfig({
-  plugins: [react()],
-  publicDir: 'public',
-  base: './',
-  server: {
-    headers: {
-      'Cross-Origin-Opener-Policy': 'same-origin',
-      'Cross-Origin-Embedder-Policy': 'require-corp',
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, '.', '')
+
+  return {
+    plugins: [react()],
+    publicDir: 'public',
+    base: './',
+    server: {
+      headers: {
+        'Cross-Origin-Opener-Policy': 'same-origin',
+        'Cross-Origin-Embedder-Policy': 'require-corp',
+      },
+      // In development, same-origin API requests can pass through Vite so a
+      // LAN client only needs access to the frontend port.
+      proxy: {
+        '/api': {
+          target:
+            env.VITE_BACKEND_PROXY_TARGET || 'http://127.0.0.1:8000',
+        },
+      },
     },
-  },
-  optimizeDeps: {
-    exclude: ['bandage-layout'],
-  },
+    optimizeDeps: {
+      exclude: ['bandage-layout'],
+    },
+  }
 })

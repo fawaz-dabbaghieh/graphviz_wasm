@@ -17,7 +17,22 @@ interface BedAnnotationPanelProps {
 }
 
 function annotationKey(annotation: BedAnnotation): string {
-  return `${annotation.lineNumber}:${annotation.id}:${annotation.chromosome}:${annotation.start}:${annotation.end}`
+  return String(annotation.lineNumber)
+}
+
+function hasUsableCoordinates(
+  annotation: BedAnnotation,
+): annotation is BedAnnotation & {
+  chromosome: string
+  start: number
+  end: number
+} {
+  return (
+    !!annotation.chromosome &&
+    annotation.start !== null &&
+    annotation.end !== null &&
+    annotation.end > annotation.start
+  )
 }
 
 export function BedAnnotationPanel({
@@ -38,6 +53,8 @@ export function BedAnnotationPanel({
   const [selectedIndexedAnnotationId, setSelectedIndexedAnnotationId] =
     useState('')
   const [columnSelection, setColumnSelection] = useState('1,2,3,4')
+  const [idColumn, setIdColumn] = useState('')
+  const [chromosomeColumn, setChromosomeColumn] = useState('')
   const [startColumn, setStartColumn] = useState('')
   const [endColumn, setEndColumn] = useState('')
   const [flankBpInput, setFlankBpInput] = useState('1000')
@@ -55,14 +72,15 @@ export function BedAnnotationPanel({
 
       return (
         annotation.id.toLowerCase().includes(normalizedQuery) ||
-        annotation.chromosome.toLowerCase().includes(normalizedQuery) ||
-        String(annotation.start).includes(normalizedQuery) ||
-        String(annotation.end).includes(normalizedQuery) ||
         displayValues.includes(normalizedQuery)
       )
     })
   }, [annotations, query])
 
+  const usableAnnotationCount = useMemo(
+    () => annotations.filter(hasUsableCoordinates).length,
+    [annotations],
+  )
   const visibleAnnotations = filteredAnnotations.slice(0, 500)
   const selectedKey = selectedAnnotation
     ? annotationKey(selectedAnnotation)
@@ -71,6 +89,8 @@ export function BedAnnotationPanel({
 
   const parseLoadedFile = (text: string, nextFilename: string) => {
     const parsedAnnotations = parseBedAnnotations(text, columnSelection, {
+      idColumn,
+      chromosomeColumn,
       startColumn,
       endColumn,
     })
@@ -115,6 +135,13 @@ export function BedAnnotationPanel({
   }
 
   const handleUseAnnotation = (annotation: BedAnnotation) => {
+    if (!hasUsableCoordinates(annotation)) {
+      setParseError(
+        'Choose chromosome, start, and end columns, then apply the settings.',
+      )
+      return
+    }
+
     const flankBp = Number(flankBpInput)
     if (!Number.isInteger(flankBp) || flankBp < 0) {
       setParseError('Flank must be a non-negative integer')
@@ -167,7 +194,7 @@ export function BedAnnotationPanel({
           <h3>Annotation Table</h3>
           <div className="annotation-summary">
             {filename
-              ? `${filename} - ${annotations.length.toLocaleString()} rows`
+              ? `${filename} - ${annotations.length.toLocaleString()} rows, ${usableAnnotationCount.toLocaleString()} ready`
               : 'Load a BED or simple TSV annotation file.'}
           </div>
         </div>
@@ -248,7 +275,43 @@ export function BedAnnotationPanel({
             placeholder="1,2,4,5,7,8"
           />
           <div className="control-hint">
-            1-based column numbers. The first row is used as the header.
+            1-based columns to display. Blank loads all columns.
+          </div>
+        </div>
+
+        <div className="control-group">
+          <label htmlFor="annotation-id-column">
+            <strong>Name/ID Col</strong>
+          </label>
+          <input
+            id="annotation-id-column"
+            className="control-input"
+            type="number"
+            min="1"
+            step="1"
+            value={idColumn}
+            onChange={event => setIdColumn(event.currentTarget.value)}
+            placeholder="auto"
+          />
+          <div className="control-hint">Optional row label.</div>
+        </div>
+
+        <div className="control-group">
+          <label htmlFor="annotation-chromosome-column">
+            <strong>Chromosome Col</strong>
+          </label>
+          <input
+            id="annotation-chromosome-column"
+            className="control-input"
+            type="number"
+            min="1"
+            step="1"
+            value={chromosomeColumn}
+            onChange={event => setChromosomeColumn(event.currentTarget.value)}
+            placeholder="auto"
+          />
+          <div className="control-hint">
+            Set manually or leave blank for header matching.
           </div>
         </div>
 
@@ -266,7 +329,9 @@ export function BedAnnotationPanel({
             onChange={event => setStartColumn(event.currentTarget.value)}
             placeholder="auto"
           />
-          <div className="control-hint">Blank uses header names.</div>
+          <div className="control-hint">
+            Set manually or leave blank for header matching.
+          </div>
         </div>
 
         <div className="control-group">
@@ -283,7 +348,9 @@ export function BedAnnotationPanel({
             onChange={event => setEndColumn(event.currentTarget.value)}
             placeholder="auto"
           />
-          <div className="control-hint">Blank uses header names.</div>
+          <div className="control-hint">
+            Set manually or leave blank for header matching.
+          </div>
         </div>
 
         <div className="control-group">
@@ -314,18 +381,25 @@ export function BedAnnotationPanel({
         </button>
       </div>
 
+      {annotations.length > 0 && usableAnnotationCount === 0 && (
+        <div className="control-hint annotation-mapping-hint">
+          The TSV is loaded. Choose chromosome, start, and end columns and apply
+          the settings to enable row selection.
+        </div>
+      )}
+
       <div className="annotation-search-row">
         <input
           className="control-input"
           type="search"
-          placeholder="Search gene, chromosome, start, or end"
+          placeholder="Search loaded columns"
           value={query}
           onChange={event => setQuery(event.currentTarget.value)}
           disabled={annotations.length === 0}
         />
       </div>
 
-      {selectedAnnotation && (
+      {selectedAnnotation && hasUsableCoordinates(selectedAnnotation) && (
         <div className="annotation-selection">
           Selected {selectedAnnotation.id} at {selectedAnnotation.chromosome}:
           {selectedAnnotation.start.toLocaleString()}-
@@ -372,6 +446,12 @@ export function BedAnnotationPanel({
                         className="table-action-button"
                         type="button"
                         onClick={() => handleUseAnnotation(annotation)}
+                        disabled={!hasUsableCoordinates(annotation)}
+                        title={
+                          hasUsableCoordinates(annotation)
+                            ? 'Use this row for region extraction'
+                            : 'Map chromosome, start, and end columns first'
+                        }
                       >
                         Use
                       </button>

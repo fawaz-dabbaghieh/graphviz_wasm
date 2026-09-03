@@ -13,8 +13,10 @@ bandage-layout-js/
 ├── BUILDING.md                    # Detailed build instructions
 ├── PROJECT_SUMMARY.md            # This file
 ├── package.json                   # NPM package configuration
-├── build.sh                       # Build script (builds OGDF + layout)
 ├── CMakeLists.txt                # CMake configuration
+├── layout_wasm/
+│   ├── build.sh                   # Build script (builds OGDF + layout)
+│   └── thirdparty/                # Relocated C++ dependencies
 │
 ├── include/                       # C++ headers (Qt-free)
 │   ├── types.h                    # Basic types (Point, String, etc.)
@@ -35,7 +37,7 @@ bandage-layout-js/
 │   ├── basic-usage.html           # Interactive browser demo
 │   └── node-example.js            # Node.js example
 │
-├── build/                         # Build outputs (created by build.sh)
+├── layout_wasm/.build/            # Generated build intermediates
 │   ├── bandage-layout.js          # Generated Emscripten JS
 │   └── bandage-layout.wasm        # Generated WebAssembly binary
 │
@@ -54,7 +56,7 @@ bandage-layout-js/
 2. **Emscripten Build System**
    - CMakeLists.txt configured for Emscripten
    - Automatic OGDF compilation with Emscripten
-   - One-command build script (`./build.sh`)
+   - One-command build script (`./layout_wasm/build.sh`)
 
 3. **JavaScript API**
    - Clean Promise-based API
@@ -132,8 +134,8 @@ const { result } = await worker.computeLayout(graph, options);
 1. **Build OGDF with Emscripten**
    ```bash
    source /path/to/emsdk/emsdk_env.sh
-   cd bandage-layout-js
-   ./build.sh
+   cd /path/to/graphviz_wasm
+   ./layout_wasm/build.sh
    ```
    This will take 6-17 minutes on first run.
 

@@ -12,9 +12,9 @@ cd emsdk
 ./emsdk activate latest
 source ./emsdk_env.sh
 
-# 2. Build Bandage Layout JS
-cd /path/to/BandageNG/bandage-layout-js
-./build.sh
+# 2. Build Bandage Layout JS from the repository root
+cd /path/to/graphviz_wasm
+./layout_wasm/build.sh
 
 # This will take 6-17 minutes on first build
 # (OGDF compilation is the slowest part)
@@ -98,6 +98,7 @@ console.log(result.nodePositions);
 const options = {
     quality: 2,                    // 0-4 (default: 1)
     linearLayout: false,           // true/false (default: false)
+    referencePathName: '',         // Optional path to straighten in linear mode
     componentSeparation: 15.0,     // Space between components
     aspectRatio: 1.333333,         // Desired aspect ratio
     nodeLengthPerMegabase: 1000.0, // Node length scaling
@@ -119,7 +120,7 @@ const options = {
 
 1. **Use Web Worker** for graphs with >500 nodes
 2. **Start with quality 0-1** for initial layout, then recompute with higher quality
-3. **Enable linearLayout** if your graph is primarily linear
+3. **Enable linearLayout** and select a reference path to straighten its backbone
 4. **Adjust componentSeparation** if components overlap
 
 ## Troubleshooting

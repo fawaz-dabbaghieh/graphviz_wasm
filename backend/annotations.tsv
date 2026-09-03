@@ -1,3 +1,4 @@
 annotation_id	display_name	path	description
 chr22_ucsc_transcripts	chr22 UCSC transcripts	indexed_example/chr22_annotations.bed	UCSC chr22 transcript BED table
 chr22_graphviz_annotations	chr22 GraphViz annotations	indexed_example/chr22_annotations_for_graphviz.bed	Simplified chr22 BED table for GraphViz testing
+chr22_chm13_annotations	CHM13 chr22 Annotations	/Users/fawaz/projects/graphviz_wasm/backend/annotations/chm13.draft_v2.0.gene_annotation.chr22.bed	I got this from somewhere online, it claims to be the CHM13 anotations GFF3

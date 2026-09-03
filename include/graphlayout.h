@@ -65,6 +65,7 @@ namespace layout {
     GraphLayout layoutGraph(const AssemblyGraph& graph,
                            int graphLayoutQuality,
                            bool useLinearLayout,
+                           const std::vector<std::string>& referencePathNodeIds,
                            double componentSeparation,
                            double aspectRatio,
                            const LayoutSettings* settings);

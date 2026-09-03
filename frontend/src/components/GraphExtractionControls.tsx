@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { IndexedGraph, RegionPath } from '../types'
 
 interface GraphExtractionControlsProps {
@@ -9,8 +9,12 @@ interface GraphExtractionControlsProps {
   selectedGraphIsLocal: boolean
   graphListError: string | null
   isLoadingGraphs: boolean
-  maxNodes: string
-  onMaxNodesChange: (value: string) => void
+  nodeMaxNodes: string
+  onNodeMaxNodesChange: (value: string) => void
+  regionMaxNodes: string
+  onRegionMaxNodesChange: (value: string) => void
+  withCoords: boolean
+  onWithCoordsChange: (enabled: boolean) => void
   nodeStart: string
   onNodeStartChange: (value: string) => void
   onExtractNode: () => void
@@ -27,6 +31,8 @@ interface GraphExtractionControlsProps {
   onRegionStartChange: (value: string) => void
   regionEnd: string
   onRegionEndChange: (value: string) => void
+  allHaplotypes: boolean
+  onAllHaplotypesChange: (enabled: boolean) => void
   onExtractRegion: () => void
   isExtracting: boolean
 }
@@ -39,8 +45,12 @@ export function GraphExtractionControls({
   selectedGraphIsLocal,
   graphListError,
   isLoadingGraphs,
-  maxNodes,
-  onMaxNodesChange,
+  nodeMaxNodes,
+  onNodeMaxNodesChange,
+  regionMaxNodes,
+  onRegionMaxNodesChange,
+  withCoords,
+  onWithCoordsChange,
   nodeStart,
   onNodeStartChange,
   onExtractNode,
@@ -57,10 +67,13 @@ export function GraphExtractionControls({
   onRegionStartChange,
   regionEnd,
   onRegionEndChange,
+  allHaplotypes,
+  onAllHaplotypesChange,
   onExtractRegion,
   isExtracting,
 }: GraphExtractionControlsProps) {
   const [graphPanelExpanded, setGraphPanelExpanded] = useState(true)
+  const [coordinateTrackQuery, setCoordinateTrackQuery] = useState('')
   const selectedRegionPath = regionPaths[selectedRegionPathIndex]
   const controlsDisabled =
     isExtracting ||
@@ -68,6 +81,36 @@ export function GraphExtractionControls({
     graphs.length === 0 ||
     !supportsExtraction
   const useManualRegion = supportsExtraction && regionPaths.length === 0
+  const filteredRegionPaths = useMemo(() => {
+    const query = coordinateTrackQuery.trim().toLocaleLowerCase()
+
+    // Retain original indices because the parent stores the selection by index.
+    return regionPaths
+      .map((regionPath, index) => ({ regionPath, index }))
+      .filter(({ regionPath }) => {
+        if (!query) {
+          return true
+        }
+
+        return [
+          regionPath.label,
+          regionPath.source,
+          regionPath.reference,
+          regionPath.haplotype,
+          regionPath.sequence,
+        ].some(value => value.toLocaleLowerCase().includes(query))
+      })
+  }, [coordinateTrackQuery, regionPaths])
+  const selectedRegionPathIsVisible = filteredRegionPaths.some(
+    ({ index }) => index === selectedRegionPathIndex,
+  )
+  const regionPathSelectValue = selectedRegionPathIsVisible
+    ? String(selectedRegionPathIndex)
+    : ''
+
+  useEffect(() => {
+    setCoordinateTrackQuery('')
+  }, [selectedGraphId])
 
   return (
     <div className="layout-controls graph-extraction-controls">
@@ -85,67 +128,68 @@ export function GraphExtractionControls({
 
         {graphPanelExpanded && (
           <div className="advanced-content">
-            <div className="control-group">
-              <label htmlFor="indexed-graph-select">
-                <strong>Available Graph:</strong>
-              </label>
-              <select
-                id="indexed-graph-select"
-                className="control-select"
-                value={selectedGraphId}
-                onChange={event =>
-                  onSelectedGraphIdChange(event.currentTarget.value)
-                }
-                disabled={isLoadingGraphs || isExtracting || graphs.length === 0}
-              >
-                {graphs.length === 0 ? (
-                  <option value="">
-                    {isLoadingGraphs ? 'Loading graphs...' : 'No graphs found'}
-                  </option>
-                ) : (
-                  graphs.map(graph => (
-                    <option key={graph.id} value={graph.id}>
-                      {graph.name}
+            <section className="graph-selection-section">
+              <h4>Graph Options</h4>
+              <div className="control-group">
+                <label htmlFor="indexed-graph-select">Available Graph</label>
+                <select
+                  id="indexed-graph-select"
+                  className="control-select"
+                  value={selectedGraphId}
+                  onChange={event =>
+                    onSelectedGraphIdChange(event.currentTarget.value)
+                  }
+                  disabled={
+                    isLoadingGraphs || isExtracting || graphs.length === 0
+                  }
+                >
+                  {graphs.length === 0 ? (
+                    <option value="">
+                      {isLoadingGraphs ? 'Loading graphs...' : 'No graphs found'}
                     </option>
-                  ))
+                  ) : (
+                    graphs.map(graph => (
+                      <option key={graph.id} value={graph.id}>
+                        {graph.name}
+                      </option>
+                    ))
+                  )}
+                </select>
+                {selectedGraphIsLocal ? (
+                  <div className="control-hint">
+                    This graph is loaded only in the browser. Node and coordinate
+                    extraction require a graph registered with the backend.
+                  </div>
+                ) : graphListError ? (
+                  <div className="control-error">{graphListError}</div>
+                ) : (
+                  <div className="control-hint">
+                    Graphs are loaded from the backend registry.
+                  </div>
                 )}
-              </select>
-              {selectedGraphIsLocal ? (
-                <div className="control-hint">
-                  This graph is loaded only in the browser. Node and coordinate
-                  extraction require a graph registered with the backend.
-                </div>
-              ) : graphListError ? (
-                <div className="control-error">{graphListError}</div>
-              ) : (
-                <div className="control-hint">
-                  Graphs are loaded from the backend registry.
-                </div>
-              )}
-            </div>
-
-            <div className="control-group">
-              <label htmlFor="extraction-max-nodes">
-                <strong>Max Nodes:</strong>
-              </label>
-              <input
-                id="extraction-max-nodes"
-                className="control-input"
-                type="number"
-                min="1"
-                step="1"
-                value={maxNodes}
-                onChange={event => onMaxNodesChange(event.currentTarget.value)}
-                disabled={controlsDisabled}
-              />
-              <div className="control-hint">
-                Applies to both node and coordinate extraction. No testing cap is
-                enforced here.
               </div>
-            </div>
+
+              <div className="control-group">
+                <label className="checkbox-control-label">
+                  <input
+                    type="checkbox"
+                    checked={withCoords}
+                    onChange={event =>
+                      onWithCoordsChange(event.currentTarget.checked)
+                    }
+                    disabled={controlsDisabled}
+                  />
+                  <strong>With Coordinates</strong>
+                </label>
+                <div className="control-hint">
+                  Calculate coordinate-bearing path and walk records for both
+                  extraction methods.
+                </div>
+              </div>
+            </section>
 
             <form
-              className="graph-control-form"
+              className="graph-control-form graph-selection-section"
               onSubmit={event => {
                 event.preventDefault()
                 onExtractNode()
@@ -164,6 +208,25 @@ export function GraphExtractionControls({
                 />
               </div>
 
+              <div className="control-group">
+                <label htmlFor="node-max-nodes">Max Nodes</label>
+                <input
+                  id="node-max-nodes"
+                  className="control-input"
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={nodeMaxNodes}
+                  onChange={event =>
+                    onNodeMaxNodesChange(event.currentTarget.value)
+                  }
+                  disabled={controlsDisabled}
+                />
+                <div className="control-hint">
+                  Maximum neighborhood size. No testing cap is enforced here.
+                </div>
+              </div>
+
               <button
                 className="compute-button"
                 type="submit"
@@ -174,7 +237,7 @@ export function GraphExtractionControls({
             </form>
 
             <form
-              className="graph-control-form"
+              className="graph-control-form graph-selection-section"
               onSubmit={event => {
                 event.preventDefault()
                 onExtractRegion()
@@ -182,11 +245,102 @@ export function GraphExtractionControls({
             >
               <h4>Coordinate Region</h4>
               <div className="control-group">
+                <label>Extraction Method</label>
+                <div
+                  className="extraction-mode-options"
+                  role="radiogroup"
+                  aria-label="Coordinate region extraction method"
+                >
+                  <label>
+                    <input
+                      type="radio"
+                      name="coordinate-region-mode"
+                      checked={allHaplotypes}
+                      onChange={() => onAllHaplotypesChange(true)}
+                      disabled={controlsDisabled}
+                    />
+                    <span>All Haplotypes</span>
+                  </label>
+                  <label>
+                    <input
+                      type="radio"
+                      name="coordinate-region-mode"
+                      checked={!allHaplotypes}
+                      onChange={() => onAllHaplotypesChange(false)}
+                      disabled={controlsDisabled}
+                    />
+                    <span>BFS</span>
+                  </label>
+                </div>
+                <div className="control-hint">
+                  {allHaplotypes
+                    ? 'Extract exact anchor-supported path and walk spans across all haplotypes.'
+                    : 'Extract a bounded breadth-first neighborhood around the requested region.'}
+                </div>
+              </div>
+              {!allHaplotypes && (
+                <div className="control-group">
+                  <label htmlFor="region-max-nodes">Max Nodes</label>
+                  <input
+                    id="region-max-nodes"
+                    className="control-input"
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={regionMaxNodes}
+                    onChange={event =>
+                      onRegionMaxNodesChange(event.currentTarget.value)
+                    }
+                    disabled={controlsDisabled}
+                  />
+                  <div className="control-hint">
+                    Maximum number of nodes returned by BFS.
+                  </div>
+                </div>
+              )}
+              <div className="control-group">
+                <label htmlFor="region-path-search">
+                  Search Coordinate Tracks
+                </label>
+                <input
+                  id="region-path-search"
+                  className="control-input"
+                  type="search"
+                  value={coordinateTrackQuery}
+                  onChange={event =>
+                    setCoordinateTrackQuery(event.currentTarget.value)
+                  }
+                  onKeyDown={event => {
+                    if (event.key !== 'Enter') {
+                      return
+                    }
+
+                    event.preventDefault()
+                    const firstMatch = filteredRegionPaths[0]
+                    if (firstMatch) {
+                      onSelectedRegionPathIndexChange(firstMatch.index)
+                    }
+                  }}
+                  placeholder="Type a path, sample, or sequence name"
+                  disabled={
+                    controlsDisabled ||
+                    isLoadingRegionPaths ||
+                    regionPaths.length === 0
+                  }
+                />
+                {regionPaths.length > 0 && (
+                  <div className="control-hint">
+                    {filteredRegionPaths.length.toLocaleString()} of{' '}
+                    {regionPaths.length.toLocaleString()} tracks
+                  </div>
+                )}
+              </div>
+              <div className="control-group">
                 <label htmlFor="region-path-select">Coordinate Track</label>
                 <select
                   id="region-path-select"
                   className="control-select"
-                  value={String(selectedRegionPathIndex)}
+                  value={regionPathSelectValue}
                   onChange={event =>
                     onSelectedRegionPathIndexChange(
                       Number(event.currentTarget.value),
@@ -204,12 +358,22 @@ export function GraphExtractionControls({
                         ? 'Loading coordinate tracks...'
                         : 'No coordinate tracks found'}
                     </option>
+                  ) : filteredRegionPaths.length === 0 ? (
+                    <option value="">No matching coordinate tracks</option>
                   ) : (
-                    regionPaths.map((regionPath, index) => (
-                      <option key={`${regionPath.label}-${index}`} value={index}>
-                        {regionPath.label}
-                      </option>
-                    ))
+                    <>
+                      {!selectedRegionPathIsVisible && (
+                        <option value="">Choose a matching track</option>
+                      )}
+                      {filteredRegionPaths.map(({ regionPath, index }) => (
+                        <option
+                          key={`${regionPath.label}-${index}`}
+                          value={index}
+                        >
+                          {regionPath.label}
+                        </option>
+                      ))}
+                    </>
                   )}
                 </select>
                 {selectedGraphIsLocal ? (
@@ -314,7 +478,11 @@ export function GraphExtractionControls({
                   (useManualRegion && !manualRegionSequence.trim())
                 }
               >
-                {isExtracting ? 'Extracting...' : 'Extract Region'}
+                {isExtracting
+                  ? 'Extracting...'
+                  : allHaplotypes
+                    ? 'Extract All Haplotypes'
+                    : 'Extract Region'}
               </button>
             </form>
           </div>

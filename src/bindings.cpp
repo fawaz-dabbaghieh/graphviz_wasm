@@ -5,9 +5,108 @@
 #include "../include/graphlayout.h"
 #include "../include/settings.h"
 #include <sstream>
+#include <unordered_map>
+#include <unordered_set>
 
 using namespace emscripten;
 
+static std::string stripOrientation(const std::string& nodeId) {
+    if (!nodeId.empty() && (nodeId.back() == '+' || nodeId.back() == '-'))
+        return nodeId.substr(0, nodeId.length() - 1);
+    return nodeId;
+}
+
+static std::vector<std::string> getReferencePathNodeIds(
+        const val& jsGraph, const std::string& referencePathName,
+        std::string& validationError) {
+    std::vector<std::string> nodeIds;
+    if (referencePathName.empty())
+        return nodeIds;
+
+    if (!jsGraph.hasOwnProperty("paths")) {
+        validationError = "The selected reference path is not present in this graph.";
+        return nodeIds;
+    }
+
+    val jsPaths = jsGraph["paths"];
+    if (jsPaths.isNull() || jsPaths.isUndefined()) {
+        validationError = "The selected reference path is not present in this graph.";
+        return nodeIds;
+    }
+
+    unsigned pathCount = jsPaths["length"].as<unsigned>();
+    for (unsigned i = 0; i < pathCount; ++i) {
+        val jsPath = jsPaths[i];
+        if (jsPath["name"].as<std::string>() != referencePathName)
+            continue;
+
+        val jsNodeIds = jsPath["nodeIds"];
+        unsigned nodeCount = jsNodeIds["length"].as<unsigned>();
+        std::unordered_set<std::string> visitedSegments;
+
+        for (unsigned j = 0; j < nodeCount; ++j) {
+            std::string nodeId = jsNodeIds[j].as<std::string>();
+            std::string segmentId = stripOrientation(nodeId);
+            if (!visitedSegments.insert(segmentId).second) {
+                validationError =
+                    "Reference path '" + referencePathName +
+                    "' repeats segment '" + segmentId + "' and cannot be linearized.";
+                return {};
+            }
+            nodeIds.push_back(nodeId);
+        }
+
+        return nodeIds;
+    }
+
+    validationError =
+        "The selected reference path '" + referencePathName +
+        "' is not present in this graph.";
+    return {};
+}
+
+static bool validateReferencePathConnectivity(
+        const AssemblyGraph& graph,
+        const std::vector<std::string>& referencePathNodeIds,
+        const std::string& referencePathName,
+        std::string& validationError) {
+    if (referencePathNodeIds.empty())
+        return true;
+
+    std::unordered_map<std::string, std::vector<std::string>> adjacency;
+    for (const auto* edge : graph.edges) {
+        std::string from =
+            stripOrientation(edge->getStartingNode()->getName());
+        std::string to =
+            stripOrientation(edge->getEndingNode()->getName());
+        adjacency[from].push_back(to);
+        adjacency[to].push_back(from);
+    }
+
+    std::vector<std::string> pending = {
+        stripOrientation(referencePathNodeIds.front())
+    };
+    std::unordered_set<std::string> visited;
+    while (!pending.empty()) {
+        std::string current = pending.back();
+        pending.pop_back();
+        if (!visited.insert(current).second)
+            continue;
+        for (const auto& neighbour : adjacency[current])
+            pending.push_back(neighbour);
+    }
+
+    for (const auto& nodeId : referencePathNodeIds) {
+        if (visited.find(stripOrientation(nodeId)) == visited.end()) {
+            validationError =
+                "Reference path '" + referencePathName +
+                "' is disconnected in the rendered graph at segment '" +
+                nodeId + "'.";
+            return false;
+        }
+    }
+    return true;
+}
 
 // Helper to create graph from JavaScript object
 AssemblyGraph* createGraphFromJS(const val& jsGraph) {
@@ -94,6 +193,9 @@ val computeLayout(val jsGraph, val jsOptions) {
                  jsOptions["quality"].as<int>() : 1;
     bool linearLayout = jsOptions.hasOwnProperty("linearLayout") ?
                        jsOptions["linearLayout"].as<bool>() : false;
+    std::string referencePathName =
+        jsOptions.hasOwnProperty("referencePathName") ?
+        jsOptions["referencePathName"].as<std::string>() : "";
     double componentSeparation = jsOptions.hasOwnProperty("componentSeparation") ?
                                 jsOptions["componentSeparation"].as<double>() : 15.0;
     double aspectRatio = jsOptions.hasOwnProperty("aspectRatio") ?
@@ -122,9 +224,45 @@ val computeLayout(val jsGraph, val jsOptions) {
 
     // Create graph from JavaScript input
     AssemblyGraph* graph = createGraphFromJS(jsGraph);
+    std::string referencePathError;
+    std::vector<std::string> referencePathNodeIds;
+    if (linearLayout) {
+        referencePathNodeIds =
+            getReferencePathNodeIds(jsGraph, referencePathName,
+                                    referencePathError);
+    }
+
+    if (!referencePathError.empty()) {
+        val errorResult = val::object();
+        errorResult.set("error", referencePathError);
+        delete graph;
+        return errorResult;
+    }
+
+    for (const auto& nodeId : referencePathNodeIds) {
+        if (graph->nodes.find(nodeId) == graph->nodes.end()) {
+            val errorResult = val::object();
+            errorResult.set(
+                "error",
+                "Reference path '" + referencePathName +
+                "' contains segment '" + nodeId +
+                "', which is not present in the rendered graph.");
+            delete graph;
+            return errorResult;
+        }
+    }
+    if (!validateReferencePathConnectivity(
+            *graph, referencePathNodeIds, referencePathName,
+            referencePathError)) {
+        val errorResult = val::object();
+        errorResult.set("error", referencePathError);
+        delete graph;
+        return errorResult;
+    }
 
     // Compute layout
     GraphLayout layoutResult = layout::layoutGraph(*graph, quality, linearLayout,
+                                                   referencePathNodeIds,
                                                    componentSeparation, aspectRatio,
                                                    &settings);
 

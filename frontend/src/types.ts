@@ -22,6 +22,17 @@ export interface GraphPath {
   name: string
   nodeIds: string[] // Ordered list of node IDs in the path
   color?: string // Optional color for this path
+  recordType?: 'P' | 'W'
+  walk?: GraphWalkMetadata
+}
+
+export interface GraphWalkMetadata {
+  sampleName: string
+  haplotypeIndex: string
+  sequenceName: string
+  sequenceStart: string
+  sequenceEnd: string
+  tags: string[]
 }
 
 export interface Graph {
@@ -29,6 +40,11 @@ export interface Graph {
   description: string
   nodes: GraphNode[]
   edges: GraphEdge[]
+  // These counts reflect source GFA records before orientation expansion.
+  sourceRecordCounts?: {
+    segments: number
+    links: number
+  }
   // Paths can come from GFA P-lines or W-lines and are optional because not
   // every graph carries embedded traversal information.
   paths?: GraphPath[] // Optional paths/walks embedded in the source GFA
@@ -59,9 +75,9 @@ export interface RegionPath {
 
 export interface BedAnnotation {
   id: string
-  chromosome: string
-  start: number
-  end: number
+  chromosome: string | null
+  start: number | null
+  end: number | null
   lineNumber: number
   columns: BedAnnotationColumn[]
 }
@@ -75,6 +91,7 @@ export interface BedAnnotationColumn {
 export interface LayoutOptions {
   quality: number
   linearLayout: boolean
+  referencePathName: string
   componentSeparation: number
   aspectRatio: number
   nodeLengthPerMegabase: number

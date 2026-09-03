@@ -10,7 +10,10 @@ import { urlExamples } from './data/urlExamples'
 import { BandageLayoutWorker } from './utils/BandageLayoutWorker'
 import { parseGFA } from './utils/gfaParser'
 import { convertGFAToGraph } from './utils/gfaConverter'
-import { stripNodeOrientation } from './utils/displayGraph'
+import {
+  pathHasRepeatedSegments,
+  stripNodeOrientation,
+} from './utils/displayGraph'
 import { clampZoom } from './utils/zoom'
 import type {
   LayoutOptions,
@@ -44,12 +47,18 @@ async function readBackendError(response: Response): Promise<string> {
   return response.text()
 }
 
+function getConfiguredBackendUrl(): string {
+  return import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000'
+}
+
 function getDefaultBackendUrl(): string {
-  return (
-    localStorage.getItem('backendUrl') ||
-    import.meta.env.VITE_BACKEND_URL ||
-    'http://localhost:8000'
-  )
+  // Host-mode development uses the Vite API proxy. Prefer that configured URL
+  // over a stale LAN address saved by an earlier browser session.
+  if (import.meta.env.VITE_PREFER_BACKEND_URL === 'true') {
+    return getConfiguredBackendUrl()
+  }
+
+  return localStorage.getItem('backendUrl') || getConfiguredBackendUrl()
 }
 
 function normalizeBackendUrl(url: string): string {
@@ -62,6 +71,7 @@ function App({ worker }: AppProps) {
   const [layoutOptions, setLayoutOptions] = useState<LayoutOptions>({
     quality: 2,
     linearLayout: false,
+    referencePathName: '',
     componentSeparation: 15.0,
     aspectRatio: 1.5,
     nodeLengthPerMegabase: 2000.0,
@@ -102,6 +112,7 @@ function App({ worker }: AppProps) {
   // Keep path visibility in the React layer so toggling paths never requires
   // recomputing the layout itself.
   const [selectedPathNames, setSelectedPathNames] = useState<string[]>([])
+  const [filterToSelectedPaths, setFilterToSelectedPaths] = useState(false)
   const [nodeColorOverrides, setNodeColorOverrides] = useState<
     Record<string, string>
   >({})
@@ -116,7 +127,10 @@ function App({ worker }: AppProps) {
   const [isLoadingRegionPaths, setIsLoadingRegionPaths] = useState(false)
   const [regionPathError, setRegionPathError] = useState<string | null>(null)
   const [subgraphStartNode, setSubgraphStartNode] = useState('')
-  const [extractionMaxNodes, setExtractionMaxNodes] = useState('200')
+  const [subgraphMaxNodes, setSubgraphMaxNodes] = useState('200')
+  const [regionMaxNodes, setRegionMaxNodes] = useState('200')
+  const [extractionWithCoords, setExtractionWithCoords] = useState(false)
+  const [extractAllHaplotypes, setExtractAllHaplotypes] = useState(true)
   const [manualRegionReference, setManualRegionReference] = useState('')
   const [manualRegionSequence, setManualRegionSequence] = useState('')
   const [regionStart, setRegionStart] = useState('')
@@ -222,9 +236,7 @@ function App({ worker }: AppProps) {
   }, [backendUrlInput])
 
   const handleResetBackendUrl = useCallback(() => {
-    const defaultBackendUrl = normalizeBackendUrl(
-      import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000',
-    )
+    const defaultBackendUrl = normalizeBackendUrl(getConfiguredBackendUrl())
 
     localStorage.removeItem('backendUrl')
     setBackendUrl(defaultBackendUrl)
@@ -471,6 +483,18 @@ function App({ worker }: AppProps) {
 
   const handleSelectBedAnnotation = useCallback(
     (annotation: BedAnnotation, flankBp: number) => {
+      if (
+        !annotation.chromosome ||
+        annotation.start === null ||
+        annotation.end === null ||
+        annotation.end <= annotation.start
+      ) {
+        setLoadError(
+          'Choose valid chromosome, start, and end columns before using this annotation.',
+        )
+        return
+      }
+
       const normalizeName = (name: string) =>
         name.trim().toLowerCase().replace(/^chr/, '')
       const annotationChromosome = normalizeName(annotation.chromosome)
@@ -594,7 +618,7 @@ function App({ worker }: AppProps) {
   // the returned GFA text through the same parser used for uploaded files.
   const handleExtractSubgraph = useCallback(async () => {
     const startNode = subgraphStartNode.trim()
-    const maxNodes = Number(extractionMaxNodes)
+    const maxNodes = Number(subgraphMaxNodes)
 
     if (!selectedIndexedGraph || !selectedGraphSupportsExtraction) {
       setLoadError('Choose an indexed graph before extracting a subgraph')
@@ -624,6 +648,7 @@ function App({ worker }: AppProps) {
           graph_id: selectedIndexedGraph,
           start_node: startNode,
           max_nodes: maxNodes,
+          with_coords: extractionWithCoords,
         }),
       })
 
@@ -633,9 +658,10 @@ function App({ worker }: AppProps) {
       }
 
       const gfaText = await response.text()
+      const coordinateSuffix = extractionWithCoords ? '_with_coords' : ''
       loadGFAFromText(
         gfaText,
-        `${selectedIndexedGraph}_${startNode}_${maxNodes}_nodes.gfa`,
+        `${selectedIndexedGraph}_${startNode}_${maxNodes}_nodes${coordinateSuffix}.gfa`,
         'backend-extraction',
       )
     } catch (error) {
@@ -647,10 +673,11 @@ function App({ worker }: AppProps) {
     }
   }, [
     backendUrl,
-    extractionMaxNodes,
+    extractionWithCoords,
     loadGFAFromText,
     selectedGraphSupportsExtraction,
     selectedIndexedGraph,
+    subgraphMaxNodes,
     subgraphStartNode,
   ])
 
@@ -660,7 +687,7 @@ function App({ worker }: AppProps) {
     const sequence = selectedRegionPath?.sequence ?? manualRegionSequence.trim()
     const start = Number(regionStart)
     const end = Number(regionEnd)
-    const maxNodes = Number(extractionMaxNodes)
+    const maxNodes = Number(regionMaxNodes)
 
     if (!selectedIndexedGraph || !selectedGraphSupportsExtraction) {
       setLoadError('Choose an indexed graph before extracting a region')
@@ -690,7 +717,10 @@ function App({ worker }: AppProps) {
       return
     }
 
-    if (!Number.isInteger(maxNodes) || maxNodes < 1) {
+    if (
+      !extractAllHaplotypes &&
+      (!Number.isInteger(maxNodes) || maxNodes < 1)
+    ) {
       setLoadError('Neighborhood size must be a positive integer')
       return
     }
@@ -710,7 +740,9 @@ function App({ worker }: AppProps) {
           sequence,
           start,
           end,
-          max_nodes: maxNodes,
+          max_nodes: extractAllHaplotypes ? undefined : maxNodes,
+          with_coords: extractionWithCoords,
+          all_haplotypes: extractAllHaplotypes,
         }),
       })
 
@@ -723,9 +755,11 @@ function App({ worker }: AppProps) {
       const referencePrefix = reference
         ? `${reference}_`
         : ''
+      const modeSuffix = extractAllHaplotypes ? '_all_haplotypes' : ''
+      const coordinateSuffix = extractionWithCoords ? '_with_coords' : ''
       loadGFAFromText(
         gfaText,
-        `${selectedIndexedGraph}_${referencePrefix}${sequence}_${start}_${end}.gfa`,
+        `${selectedIndexedGraph}_${referencePrefix}${sequence}_${start}_${end}${modeSuffix}${coordinateSuffix}.gfa`,
         'backend-extraction',
       )
     } catch (error) {
@@ -737,11 +771,13 @@ function App({ worker }: AppProps) {
     }
   }, [
     backendUrl,
-    extractionMaxNodes,
+    extractAllHaplotypes,
+    extractionWithCoords,
     loadGFAFromText,
     manualRegionReference,
     manualRegionSequence,
     regionEnd,
+    regionMaxNodes,
     regionPaths,
     regionStart,
     selectedGraphSupportsExtraction,
@@ -808,6 +844,20 @@ function App({ worker }: AppProps) {
     setNodeLocatorInput('')
     setNodeLocatorError(null)
     setFocusNodeId(null)
+    setFilterToSelectedPaths(false)
+    setLayoutOptions(currentOptions => {
+      if (!currentOptions.referencePathName) return currentOptions
+
+      const referencePath = currentGraph?.paths?.find(
+        path => path.name === currentOptions.referencePathName,
+      )
+      const hasRepeatedSegment =
+        referencePath && pathHasRepeatedSegments(referencePath.nodeIds)
+
+      return referencePath && !hasRepeatedSegment
+        ? currentOptions
+        : { ...currentOptions, referencePathName: '' }
+    })
 
     if (!currentGraph?.paths) {
       setSelectedPathNames([])
@@ -821,6 +871,14 @@ function App({ worker }: AppProps) {
     )
     setNodeColorOverrides({})
   }, [currentGraph])
+
+  useEffect(() => {
+    // Avoid an unexpectedly blank canvas if the final selected path is
+    // deselected or the Paths panel is closed.
+    if (!drawPaths || visiblePathNames.length === 0) {
+      setFilterToSelectedPaths(false)
+    }
+  }, [drawPaths, visiblePathNames.length])
 
   const handleColorPathNodes = useCallback(
     (pathName: string, color: string): number => {
@@ -880,6 +938,22 @@ function App({ worker }: AppProps) {
     setNodeColorOverrides({})
   }, [])
 
+  const effectiveLayoutOptions = useMemo(() => {
+    if (!layoutOptions.linearLayout || !layoutOptions.referencePathName) {
+      return layoutOptions
+    }
+
+    const referencePath = currentGraph?.paths?.find(
+      path => path.name === layoutOptions.referencePathName,
+    )
+    const hasRepeatedSegment =
+      referencePath && pathHasRepeatedSegments(referencePath.nodeIds)
+
+    return referencePath && !hasRepeatedSegment
+      ? layoutOptions
+      : { ...layoutOptions, referencePathName: '' }
+  }, [currentGraph?.paths, layoutOptions])
+
   // Compute layout when graph or options change
   const computeLayout = useCallback(async () => {
     if (!worker) {
@@ -893,7 +967,7 @@ function App({ worker }: AppProps) {
 
       const { result, duration } = await worker.computeLayout(
         currentGraph,
-        layoutOptions,
+        effectiveLayoutOptions,
       )
       setLayoutResult(result)
       setLayoutDuration(duration)
@@ -902,7 +976,7 @@ function App({ worker }: AppProps) {
     } finally {
       setIsComputing(false)
     }
-  }, [worker, currentGraph, layoutOptions])
+  }, [worker, currentGraph, effectiveLayoutOptions])
 
   // Use a ref to track the current request ID
   const requestIdRef = useRef(0)
@@ -922,7 +996,7 @@ function App({ worker }: AppProps) {
       try {
         const { result, duration } = await worker.computeLayout(
           currentGraph,
-          layoutOptions,
+          effectiveLayoutOptions,
         )
 
         // Only update state if this is still the latest request
@@ -1155,8 +1229,12 @@ function App({ worker }: AppProps) {
             selectedGraphIsLocal={selectedGraphIsLocal}
             graphListError={indexedGraphError}
             isLoadingGraphs={isLoadingIndexedGraphs}
-            maxNodes={extractionMaxNodes}
-            onMaxNodesChange={setExtractionMaxNodes}
+            nodeMaxNodes={subgraphMaxNodes}
+            onNodeMaxNodesChange={setSubgraphMaxNodes}
+            regionMaxNodes={regionMaxNodes}
+            onRegionMaxNodesChange={setRegionMaxNodes}
+            withCoords={extractionWithCoords}
+            onWithCoordsChange={setExtractionWithCoords}
             nodeStart={subgraphStartNode}
             onNodeStartChange={setSubgraphStartNode}
             onExtractNode={handleExtractSubgraph}
@@ -1173,6 +1251,8 @@ function App({ worker }: AppProps) {
             onRegionStartChange={setRegionStart}
             regionEnd={regionEnd}
             onRegionEndChange={setRegionEnd}
+            allHaplotypes={extractAllHaplotypes}
+            onAllHaplotypesChange={setExtractAllHaplotypes}
             onExtractRegion={handleExtractRegion}
             isExtracting={isExtractingSubgraph}
           />
@@ -1198,6 +1278,7 @@ function App({ worker }: AppProps) {
             hasPathsInGraph={
               !!currentGraph?.paths && currentGraph.paths.length > 0
             }
+            paths={currentGraph?.paths ?? []}
           />
         </div>
 
@@ -1242,7 +1323,21 @@ function App({ worker }: AppProps) {
           ) : (
             <div className="visualization-section">
               <div className="graph-layout-header">
-                <h3>Graph Layout</h3>
+                <div className="graph-layout-title">
+                  <h3>Graph Layout</h3>
+                  {currentGraph?.sourceRecordCounts && (
+                    <div className="graph-layout-counts">
+                      <span>
+                        Number of Nodes:{' '}
+                        {currentGraph.sourceRecordCounts.segments.toLocaleString()}
+                      </span>
+                      <span>
+                        Number of Edges:{' '}
+                        {currentGraph.sourceRecordCounts.links.toLocaleString()}
+                      </span>
+                    </div>
+                  )}
+                </div>
                 <form
                   className="node-locator-form"
                   onSubmit={event => {
@@ -1303,6 +1398,7 @@ function App({ worker }: AppProps) {
                     labelLengthThreshold={labelLengthThreshold}
                     drawPaths={drawPaths}
                     visiblePathIds={visiblePathNameSet}
+                    filterToSelectedPaths={filterToSelectedPaths}
                     nodeColorOverrides={nodeColorOverrides}
                     onUseAsStartNode={setSubgraphStartNode}
                   />
@@ -1328,6 +1424,8 @@ function App({ worker }: AppProps) {
                           )
                         }
                         onDeselectAll={() => setSelectedPathNames([])}
+                        filterToSelectedPaths={filterToSelectedPaths}
+                        onFilterToSelectedPathsChange={setFilterToSelectedPaths}
                         onColorPathNodes={handleColorPathNodes}
                         onClearNodeColors={handleClearPathNodeColors}
                       />
