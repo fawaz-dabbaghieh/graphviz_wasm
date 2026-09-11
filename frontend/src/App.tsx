@@ -15,13 +15,14 @@ import {
   stripNodeOrientation,
 } from './utils/displayGraph'
 import { clampZoom } from './utils/zoom'
+import { readBackendError, runGfaidxJob } from './api/gfaidx'
+import type { GfaidxJobProgress } from './api/gfaidx'
 import type {
   LayoutOptions,
   LayoutResult,
   ColorScheme,
   Graph,
   IndexedGraph,
-  IndexedAnnotation,
   RegionPath,
   BedAnnotation,
 } from './types'
@@ -31,24 +32,8 @@ interface AppProps {
   worker: BandageLayoutWorker
 }
 
-async function readBackendError(response: Response): Promise<string> {
-  const contentType = response.headers.get('content-type') ?? ''
-
-  if (contentType.includes('application/json')) {
-    const errorBody = (await response.json()) as { detail?: unknown }
-
-    // FastAPI returns either a string detail from our HTTPException or a
-    // validation array from Pydantic. Flatten both into readable UI text.
-    return typeof errorBody.detail === 'string'
-      ? errorBody.detail
-      : JSON.stringify(errorBody.detail)
-  }
-
-  return response.text()
-}
-
 function getConfiguredBackendUrl(): string {
-  return import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000'
+  return import.meta.env.VITE_BACKEND_URL || 'http://127.0.0.1:18081'
 }
 
 function getDefaultBackendUrl(): string {
@@ -135,24 +120,18 @@ function App({ worker }: AppProps) {
   const [manualRegionSequence, setManualRegionSequence] = useState('')
   const [regionStart, setRegionStart] = useState('')
   const [regionEnd, setRegionEnd] = useState('')
-  const [isExtractingSubgraph, setIsExtractingSubgraph] = useState(false)
+  const [gfaidxJobProgress, setGfaidxJobProgress] =
+    useState<GfaidxJobProgress | null>(null)
+  const gfaidxJobAbortController = useRef<AbortController | null>(null)
   const [rightPanelView, setRightPanelView] = useState<
     'graph' | 'annotations'
   >('graph')
   const [bedAnnotations, setBedAnnotations] = useState<BedAnnotation[]>([])
   const [selectedBedAnnotation, setSelectedBedAnnotation] =
     useState<BedAnnotation | null>(null)
-  const [indexedAnnotations, setIndexedAnnotations] = useState<
-    IndexedAnnotation[]
-  >([])
-  const [isLoadingIndexedAnnotations, setIsLoadingIndexedAnnotations] =
-    useState(false)
-  const [indexedAnnotationError, setIndexedAnnotationError] = useState<
-    string | null
-  >(null)
-  const [isLoadingAnnotationFile, setIsLoadingAnnotationFile] = useState(false)
   const [backendUrl, setBackendUrl] = useState(getDefaultBackendUrl)
   const [backendUrlInput, setBackendUrlInput] = useState(getDefaultBackendUrl)
+  const isExtractingSubgraph = gfaidxJobProgress !== null
 
   const graphSelectionOptions = useMemo(() => {
     if (!localGraphOption) return indexedGraphs
@@ -251,7 +230,7 @@ function App({ worker }: AppProps) {
         setIsLoadingIndexedGraphs(true)
         setIndexedGraphError(null)
 
-        const response = await fetch(`${backendUrl}/api/graphs`)
+        const response = await fetch(`${backendUrl}/api/gfaidx/graphs`)
         if (!response.ok) {
           const errorText = await readBackendError(response)
           throw new Error(errorText || `Backend returned HTTP ${response.status}`)
@@ -301,47 +280,6 @@ function App({ worker }: AppProps) {
   useEffect(() => {
     let cancelled = false
 
-    const loadIndexedAnnotations = async () => {
-      try {
-        setIsLoadingIndexedAnnotations(true)
-        setIndexedAnnotationError(null)
-
-        const response = await fetch(`${backendUrl}/api/annotations`)
-        if (!response.ok) {
-          const errorText = await readBackendError(response)
-          throw new Error(errorText || `Backend returned HTTP ${response.status}`)
-        }
-
-        const annotations = (await response.json()) as IndexedAnnotation[]
-        if (cancelled) return
-
-        setIndexedAnnotations(annotations)
-      } catch (error) {
-        if (cancelled) return
-
-        const message =
-          error instanceof Error
-            ? error.message
-            : 'Failed to load annotation list'
-        setIndexedAnnotationError(message)
-        setIndexedAnnotations([])
-      } finally {
-        if (!cancelled) {
-          setIsLoadingIndexedAnnotations(false)
-        }
-      }
-    }
-
-    loadIndexedAnnotations()
-
-    return () => {
-      cancelled = true
-    }
-  }, [backendUrl])
-
-  useEffect(() => {
-    let cancelled = false
-
     const loadRegionPaths = async () => {
       if (!selectedIndexedGraph || !selectedGraphSupportsExtraction) {
         setIsLoadingRegionPaths(false)
@@ -366,7 +304,7 @@ function App({ worker }: AppProps) {
         setRegionEnd('')
 
         const response = await fetch(
-          `${backendUrl}/api/graphs/${encodeURIComponent(
+          `${backendUrl}/api/gfaidx/graphs/${encodeURIComponent(
             selectedIndexedGraph,
           )}/region-paths`,
         )
@@ -443,42 +381,6 @@ function App({ worker }: AppProps) {
       setSelectedBedAnnotation(null)
     },
     [],
-  )
-
-  const handleLoadIndexedAnnotation = useCallback(
-    async (annotationId: string) => {
-      const selectedAnnotation = indexedAnnotations.find(
-        annotation => annotation.id === annotationId,
-      )
-
-      try {
-        setIsLoadingAnnotationFile(true)
-        setLoadError(null)
-
-        const response = await fetch(
-          `${backendUrl}/api/annotations/${encodeURIComponent(annotationId)}`,
-        )
-        if (!response.ok) {
-          const errorText = await readBackendError(response)
-          throw new Error(errorText || `Backend returned HTTP ${response.status}`)
-        }
-
-        return {
-          text: await response.text(),
-          filename: selectedAnnotation?.name ?? annotationId,
-        }
-      } catch (error) {
-        const message =
-          error instanceof Error
-            ? error.message
-            : 'Failed to load annotation file'
-        setLoadError(message)
-        throw error
-      } finally {
-        setIsLoadingAnnotationFile(false)
-      }
-    },
-    [backendUrl, indexedAnnotations],
   )
 
   const handleSelectBedAnnotation = useCallback(
@@ -586,6 +488,42 @@ function App({ worker }: AppProps) {
     [],
   )
 
+  // Stop polling when this visualizer is unmounted. Clearing the ref first
+  // also prevents the in-flight request from updating an unmounted component.
+  useEffect(() => {
+    return () => {
+      const controller = gfaidxJobAbortController.current
+      gfaidxJobAbortController.current = null
+      controller?.abort()
+    }
+  }, [])
+
+  // All gfaidx queries use the Go backend's existing queue contract: submit a
+  // job, poll its ticket, then retrieve the completed GFA result.
+  const runBackendExtraction = useCallback(
+    async (submissionPath: string, payload: unknown) => {
+      gfaidxJobAbortController.current?.abort()
+      const controller = new AbortController()
+      gfaidxJobAbortController.current = controller
+
+      try {
+        return await runGfaidxJob({
+          backendUrl,
+          submissionPath,
+          payload,
+          signal: controller.signal,
+          onProgress: setGfaidxJobProgress,
+        })
+      } finally {
+        if (gfaidxJobAbortController.current === controller) {
+          gfaidxJobAbortController.current = null
+          setGfaidxJobProgress(null)
+        }
+      }
+    },
+    [backendUrl],
+  )
+
   // Handle loading from URL
   const handleLoadFromURL = useCallback(async () => {
     if (!urlInput.trim()) return
@@ -636,28 +574,17 @@ function App({ worker }: AppProps) {
     }
 
     try {
-      setIsExtractingSubgraph(true)
       setLoadError(null)
 
-      const response = await fetch(`${backendUrl}/api/extract-subgraph`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
+      const { gfaText } = await runBackendExtraction(
+        '/api/ticket/gfaidx/subgraph',
+        {
           graph_id: selectedIndexedGraph,
           start_node: startNode,
           max_nodes: maxNodes,
           with_coords: extractionWithCoords,
-        }),
-      })
-
-      if (!response.ok) {
-        const errorText = await readBackendError(response)
-        throw new Error(errorText || `Backend returned HTTP ${response.status}`)
-      }
-
-      const gfaText = await response.text()
+        },
+      )
       const coordinateSuffix = extractionWithCoords ? '_with_coords' : ''
       loadGFAFromText(
         gfaText,
@@ -665,16 +592,16 @@ function App({ worker }: AppProps) {
         'backend-extraction',
       )
     } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return
+
       const message =
         error instanceof Error ? error.message : 'Failed to extract subgraph'
       setLoadError(message)
-    } finally {
-      setIsExtractingSubgraph(false)
     }
   }, [
-    backendUrl,
     extractionWithCoords,
     loadGFAFromText,
+    runBackendExtraction,
     selectedGraphSupportsExtraction,
     selectedIndexedGraph,
     subgraphMaxNodes,
@@ -726,15 +653,11 @@ function App({ worker }: AppProps) {
     }
 
     try {
-      setIsExtractingSubgraph(true)
       setLoadError(null)
 
-      const response = await fetch(`${backendUrl}/api/extract-region`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
+      const { gfaText } = await runBackendExtraction(
+        '/api/ticket/gfaidx/region',
+        {
           graph_id: selectedIndexedGraph,
           reference,
           sequence,
@@ -743,15 +666,8 @@ function App({ worker }: AppProps) {
           max_nodes: extractAllHaplotypes ? undefined : maxNodes,
           with_coords: extractionWithCoords,
           all_haplotypes: extractAllHaplotypes,
-        }),
-      })
-
-      if (!response.ok) {
-        const errorText = await readBackendError(response)
-        throw new Error(errorText || `Backend returned HTTP ${response.status}`)
-      }
-
-      const gfaText = await response.text()
+        },
+      )
       const referencePrefix = reference
         ? `${reference}_`
         : ''
@@ -763,14 +679,13 @@ function App({ worker }: AppProps) {
         'backend-extraction',
       )
     } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return
+
       const message =
         error instanceof Error ? error.message : 'Failed to extract region'
       setLoadError(message)
-    } finally {
-      setIsExtractingSubgraph(false)
     }
   }, [
-    backendUrl,
     extractAllHaplotypes,
     extractionWithCoords,
     loadGFAFromText,
@@ -780,6 +695,7 @@ function App({ worker }: AppProps) {
     regionMaxNodes,
     regionPaths,
     regionStart,
+    runBackendExtraction,
     selectedGraphSupportsExtraction,
     selectedIndexedGraph,
     selectedRegionPathIndex,
@@ -1198,7 +1114,7 @@ function App({ worker }: AppProps) {
               type="url"
               value={backendUrlInput}
               onChange={event => setBackendUrlInput(event.currentTarget.value)}
-              placeholder="http://192.168.1.10:8000"
+              placeholder="http://192.168.1.10:18081"
             />
             <button type="submit">Apply</button>
             <button type="button" onClick={handleResetBackendUrl}>
@@ -1255,6 +1171,7 @@ function App({ worker }: AppProps) {
             onAllHaplotypesChange={setExtractAllHaplotypes}
             onExtractRegion={handleExtractRegion}
             isExtracting={isExtractingSubgraph}
+            jobProgress={gfaidxJobProgress}
           />
           <LayoutControls
             options={layoutOptions}
@@ -1313,11 +1230,6 @@ function App({ worker }: AppProps) {
                 selectedAnnotation={selectedBedAnnotation}
                 onAnnotationsChange={handleBedAnnotationsChange}
                 onSelectAnnotation={handleSelectBedAnnotation}
-                indexedAnnotations={indexedAnnotations}
-                indexedAnnotationError={indexedAnnotationError}
-                isLoadingIndexedAnnotations={isLoadingIndexedAnnotations}
-                isLoadingAnnotationFile={isLoadingAnnotationFile}
-                onLoadIndexedAnnotation={handleLoadIndexedAnnotation}
               />
             </div>
           ) : (

@@ -468,6 +468,29 @@ body:has(.app.dark-mode) {
   margin-bottom: 0;
 }
 
+.gfaidx-job-status {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-bottom: 16px;
+  padding: 10px;
+  border: 1px solid #8aa9cc;
+  border-radius: 4px;
+  background: #eef6ff;
+  color: #234b73;
+  font-size: 13px;
+}
+
+.gfaidx-job-status code {
+  overflow-wrap: anywhere;
+}
+
+.app.dark-mode .gfaidx-job-status {
+  border-color: #496b91;
+  background: #17293c;
+  color: #b9d7f5;
+}
+
 .graph-selection-section {
   margin: 0;
   padding: 0;

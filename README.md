@@ -23,135 +23,149 @@ This is a high-performance WebAssembly compilation of the Bandage graph layout a
 
 ```
 ├── frontend/      # React/Vite web visualizer
-├── backend/       # FastAPI service for server-side graph requests
+├── backend/       # Retained legacy FastAPI service
 ├── src/           # C++ source files for the WASM layout engine
 ├── include/       # C++ headers for the WASM layout engine
 ├── js/            # Built JavaScript/WASM wrapper used by the frontend
 └── examples/      # Usage examples for the layout package
 ```
 
-## Local Development
+## Local Development With The Go Backend
 
-The app currently runs as two local services:
+The `go_backend` frontend uses the MMseqs2-App Go service as a separate HTTP
+API. The browser discovers server-owned indexed graphs, submits a read-only
+`gfaidx` query, polls the returned ticket, and downloads the GFA after the job
+is complete:
 
-- The frontend is the React/Vite visualizer.
-- The backend is a FastAPI API that runs controlled server-side `gfaidx`
-  extraction commands.
+- `GET /api/gfaidx/graphs`
+- `GET /api/gfaidx/graphs/{graph_id}/region-paths`
+- `POST /api/ticket/gfaidx/subgraph` or `/api/ticket/gfaidx/region`
+- `GET /api/ticket/{ticket}` until its status is `COMPLETE` or `ERROR`
+- `GET /api/result/gfaidx/{ticket}` for the completed GFA
 
-For the current backend integration, the browser calls `GET /api/graphs` to
-load the server-side graph registry, then calls `POST /api/extract-subgraph` or
-`POST /api/extract-region`. The backend runs controlled `gfaidx` commands
-against registered indexed graphs and returns the extracted GFA to the
-visualizer.
+BED/TSV annotations are selected from the user's laptop with **Load BED/TSV**;
+the frontend does not request annotation files stored on the server.
 
-### Quick Conda Test
+### 1. Start The Go Backend
 
-Create and activate the test environment:
+The example below uses the ignored development data in
+`MMseqs2-App/gfaidx_test`. From the MMseqs2-App repository:
 
 ```bash
-conda env create -f environment.yml
+conda activate mmseqs2-app
+mkdir -p /private/tmp/mmseqs-gfaidx-api/{databases,jobs,tmp}
+cd backend
+go run . \
+  -local \
+  -app mmseqs \
+  -server.address 127.0.0.1:18081 \
+  -server.pathprefix /api \
+  -server.cors true \
+  -paths.mmseqs ../resources/mac/arm64/mmseqs \
+  -paths.databases /private/tmp/mmseqs-gfaidx-api/databases \
+  -paths.results /private/tmp/mmseqs-gfaidx-api/jobs \
+  -paths.temporary /private/tmp/mmseqs-gfaidx-api/tmp \
+  -gfaidx.binary ../gfaidx_test/bin/gfaidx \
+  -gfaidx.databases ../gfaidx_test \
+  -gfaidx.timeoutseconds 120 \
+  -gfaidx.maxthreads 2
+```
+
+The paths above are for the current Apple Silicon test setup. Adjust the
+`mmseqs`, `gfaidx`, database, and temporary paths for another machine. Graphs
+are registered by server-controlled `<graph-id>.params` files; graph file paths
+are never accepted from browser requests.
+
+Confirm that the backend can see the test graph:
+
+```bash
+curl http://127.0.0.1:18081/api/gfaidx/graphs
+```
+
+### 2. Start The Frontend
+
+In a second terminal, from this repository:
+
+```bash
 conda activate graphviz-wasm
-```
-
-For an existing environment, install newly added packages with:
-
-```bash
-conda env update -f environment.yml
-```
-
-Start both the backend and frontend from the repository root:
-
-```bash
-./run_dev.sh
-```
-
-Open the frontend URL printed by Vite, usually:
-
-```text
-http://127.0.0.1:5173
-```
-
-The script requires `gfaidx` from the active Conda environment, verifies that it
-can run, and sets the frontend backend URL to `http://127.0.0.1:8000`.
-
-To test from another device on the same network:
-
-```bash
-./run_dev.sh --host
-```
-
-The script binds both services to all network interfaces, detects the laptop's
-LAN IP, and prints the frontend URL to open on another device. Browser API
-requests use the same frontend address and are proxied internally to FastAPI,
-so the other device only needs network access to the frontend port.
-
-If automatic address detection chooses the wrong network interface, specify the
-address explicitly:
-
-```bash
-LAN_IP=192.168.1.25 ./run_dev.sh --host
-```
-
-### Manual Setup
-
-If you do not want to use `environment.yml`, install packages manually.
-
-Inside your Conda environment, install Python and Node tooling:
-
-```bash
-conda activate bandagejs
-conda install -c conda-forge python nodejs fastapi uvicorn
-```
-
-Alternatively, if Python and Node are already installed in the environment, only
-install the backend Python dependencies:
-
-```bash
-pip install -r backend/requirements.txt
-```
-
-Then install the frontend JavaScript dependencies:
-
-```bash
 cd frontend
 npm install
+VITE_BACKEND_URL=http://127.0.0.1:18081 \
+  VITE_PREFER_BACKEND_URL=true \
+  npm run dev
 ```
 
-### Start The Backend
+Open `http://127.0.0.1:5173`. Choose a registered graph in **Graph Selection**,
+then submit a node-neighborhood or coordinate-region extraction. While it is in
+progress, the panel displays the ticket ID and whether it is queued, running, or
+downloading. While a ticket is `PENDING` or `RUNNING`, the frontend waits one
+second between status requests; requests do not overlap. The completed GFA is
+loaded directly into the visualizer.
 
-From the repository root:
+`VITE_PREFER_BACKEND_URL=true` is useful during testing because it ignores an
+older backend address saved in browser local storage. The backend address can
+also be changed from the **Backend** field at the top of the app.
+
+### Check A Job From The Command Line
+
+Submitting a region directly shows the same API sequence used by the frontend:
 
 ```bash
-conda activate bandagejs
-python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000 --reload
+curl -X POST \
+  -H 'Content-Type: application/json' \
+  --data '{"graph_id":"chr22","reference":"CHM13","sequence":"chr22","start":1000000,"end":1001000,"max_nodes":20,"all_haplotypes":false}' \
+  http://127.0.0.1:18081/api/ticket/gfaidx/region
 ```
 
-The backend API will be available at:
-
-```text
-http://127.0.0.1:8000
-```
-
-### Start The Frontend
-
-In a second terminal:
+Copy the returned `id`, then check and download it:
 
 ```bash
-conda activate bandagejs
-cd frontend
-npm run dev
+curl http://127.0.0.1:18081/api/ticket/TICKET_ID
+curl -o result.gfa http://127.0.0.1:18081/api/result/gfaidx/TICKET_ID
 ```
 
-Open the Vite URL shown in the terminal, usually:
+The result endpoint returns the GFA only after the ticket is `COMPLETE`.
 
-```text
-http://localhost:5173
+### Demonstrate It On The Local Network
+
+Yes, another device on the same network can use the app. The simplest setup
+keeps the Go backend bound to `127.0.0.1` and exposes only Vite; Vite proxies
+`/api` requests to the backend.
+
+Keep the Go backend from step 1 running in Terminal 1. In Terminal 2, stop the
+existing Vite process with `Ctrl+C`, find the laptop's Wi-Fi address, and restart
+the frontend in network mode:
+
+```bash
+cd /Users/fawaz/projects/graphviz_wasm/frontend
+conda activate graphviz-wasm
+
+LAPTOP_LAN_IP="$(ipconfig getifaddr en0)"
+
+VITE_BACKEND_URL="http://${LAPTOP_LAN_IP}:5173" \
+  VITE_PREFER_BACKEND_URL=true \
+  VITE_BACKEND_PROXY_TARGET=http://127.0.0.1:18081 \
+  npm run dev -- --host 0.0.0.0 --port 5173
 ```
 
-Use the graph selection panel in the left sidebar to extract either a
-node-neighborhood subgraph or a coordinate-region subgraph from the backend. The
-backend currently ships with a `chr22` registry entry and refuses requests above
-10000 nodes.
+Vite prints a **Network** URL such as `http://192.168.1.25:5173`. Open that URL
+on the other device; do not use `localhost` or `0.0.0.0` there. If `en0` does not
+return an address, try `ipconfig getifaddr en1` and set `LAPTOP_LAN_IP` to that
+value. Both devices must be on the same network, and the laptop firewall must
+allow incoming connections to Vite.
+
+Alternatively, bind the Go backend itself with
+`-server.address 0.0.0.0:18081`, keep `-server.cors true`, and configure the
+frontend to use `http://192.168.1.25:18081`. This exposes both ports. These
+development configurations have no authentication by default, so use them only
+on a trusted LAN and do not expose them directly to the public internet.
+
+### Retained Python Backend
+
+The existing `backend/` FastAPI implementation and `run_dev.sh` are intentionally
+still present for now. They use the older immediate-response endpoints; the
+`go_backend` frontend flow documented above targets the Go ticket API. They can
+be removed separately after the Go integration has settled.
 
 ## Dependencies Analysis
 

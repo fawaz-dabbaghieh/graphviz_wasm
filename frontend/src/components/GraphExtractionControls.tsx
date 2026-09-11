@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import type { GfaidxJobProgress } from '../api/gfaidx'
 import type { IndexedGraph, RegionPath } from '../types'
 
 interface GraphExtractionControlsProps {
@@ -35,6 +36,26 @@ interface GraphExtractionControlsProps {
   onAllHaplotypesChange: (enabled: boolean) => void
   onExtractRegion: () => void
   isExtracting: boolean
+  jobProgress: GfaidxJobProgress | null
+}
+
+// Keep queue terminology visible so users can distinguish waiting in the
+// backend queue from gfaidx execution and result transfer.
+function describeJobProgress(progress: GfaidxJobProgress): string {
+  switch (progress.phase) {
+    case 'SUBMITTING':
+      return 'Submitting gfaidx job'
+    case 'PENDING':
+      return 'Waiting in backend queue'
+    case 'RUNNING':
+      return 'gfaidx is running'
+    case 'COMPLETE':
+      return 'Extraction complete'
+    case 'DOWNLOADING':
+      return 'Downloading extracted GFA'
+    case 'ERROR':
+      return 'gfaidx job failed'
+  }
 }
 
 export function GraphExtractionControls({
@@ -71,6 +92,7 @@ export function GraphExtractionControls({
   onAllHaplotypesChange,
   onExtractRegion,
   isExtracting,
+  jobProgress,
 }: GraphExtractionControlsProps) {
   const [graphPanelExpanded, setGraphPanelExpanded] = useState(true)
   const [coordinateTrackQuery, setCoordinateTrackQuery] = useState('')
@@ -128,6 +150,21 @@ export function GraphExtractionControls({
 
         {graphPanelExpanded && (
           <div className="advanced-content">
+            {jobProgress && (
+              <div
+                className="gfaidx-job-status"
+                role="status"
+                aria-live="polite"
+              >
+                <strong>{describeJobProgress(jobProgress)}</strong>
+                {jobProgress.ticket && (
+                  <span>
+                    Ticket: <code>{jobProgress.ticket}</code>
+                  </span>
+                )}
+              </div>
+            )}
+
             <section className="graph-selection-section">
               <h4>Graph Options</h4>
               <div className="control-group">
