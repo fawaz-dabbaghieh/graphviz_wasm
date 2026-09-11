@@ -196,6 +196,35 @@ export function LayoutControls({
               </div>
             </div>
 
+            {options.linearLayout && options.referencePathName && (
+              <div className="control-group">
+                <label>
+                  <strong>Path Straightening Rounds:</strong>
+                  <span className="control-value">
+                    {options.referencePathRelaxRounds}
+                  </span>
+                </label>
+                <input
+                  type="range"
+                  min="1"
+                  max="8"
+                  value={options.referencePathRelaxRounds}
+                  onChange={e =>
+                    onChange({
+                      ...options,
+                      referencePathRelaxRounds: parseInt(e.target.value),
+                    })
+                  }
+                  disabled={isComputing}
+                />
+                <div className="control-hint">
+                  How many times the layout re-settles around the
+                  straightened reference path. Higher = straighter
+                  neighborhood, slower computation.
+                </div>
+              </div>
+            )}
+
             <div className="control-group">
               <label>
                 <strong>Edge Length:</strong>

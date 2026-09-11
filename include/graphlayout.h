@@ -68,7 +68,8 @@ namespace layout {
                            const std::vector<std::string>& referencePathNodeIds,
                            double componentSeparation,
                            double aspectRatio,
-                           const LayoutSettings* settings);
+                           const LayoutSettings* settings,
+                           int referencePathRelaxRounds = 4);
 
     // Helper to apply layout (sets nodes as drawn)
     void apply(AssemblyGraph& graph, const GraphLayout& layout);

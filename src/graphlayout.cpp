@@ -25,6 +25,7 @@
 #include <limits>
 #include <set>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 using namespace ogdf;
@@ -180,7 +181,6 @@ static void addToOgdfGraph(const DeBruijnEdge* edge,
 
 struct ReferencePathPoint {
     ogdf::node node;
-    DPoint sourcePosition;
     double targetX;
 };
 
@@ -188,7 +188,6 @@ static bool collectReferencePathPoints(
         const AssemblyGraph& graph,
         const std::vector<std::string>& referencePathNodeIds,
         const OGDFGraphLayout& layout,
-        const GraphAttributes& graphAttributes,
         const LayoutSettings* settings,
         std::vector<ReferencePathPoint>& points) {
     points.clear();
@@ -228,7 +227,6 @@ static bool collectReferencePathPoints(
             ogdf::node segment = segments[orientedIndex];
             points.push_back({
                 segment,
-                graphAttributes.point(segment),
                 nextNodeX + segmentSpacing * static_cast<double>(segmentIndex),
             });
         }
@@ -245,25 +243,6 @@ static bool collectReferencePathPoints(
     for (auto& point : points)
         point.targetX -= centerX;
 
-    return true;
-}
-
-static bool positionReferencePathInitially(
-        const AssemblyGraph& graph,
-        const std::vector<std::string>& referencePathNodeIds,
-        const OGDFGraphLayout& layout,
-        GraphAttributes& graphAttributes,
-        const LayoutSettings* settings) {
-    std::vector<ReferencePathPoint> points;
-    if (!collectReferencePathPoints(graph, referencePathNodeIds, layout,
-                                    graphAttributes, settings, points))
-        return false;
-
-    // A straight initial backbone gives FMMM a less distorted starting point.
-    for (const auto& point : points) {
-        graphAttributes.x(point.node) = point.targetX;
-        graphAttributes.y(point.node) = 0.0;
-    }
     return true;
 }
 
@@ -358,8 +337,25 @@ static void buildGraph(Graph& ogdfGraph,
                       OGDFGraphLayout& layoutMap,
                       const AssemblyGraph& graph,
                       const LayoutSettings* settings,
-                      bool useLinearLayout) {
-    if (useLinearLayout) {
+                      bool useLinearLayout,
+                      bool referencePathRequested) {
+    if (referencePathRequested) {
+        // A specific path will be straightened directly by the relax loop in
+        // layoutGraph(); seeding everything else in ID order here would just
+        // impose unrelated structure that the reference-path pass then has
+        // to fight, so let every node start from FMMM's normal placement.
+        for (const auto& pair : graph.nodes) {
+            DeBruijnNode* node = pair.second;
+            if (!node->isDrawn() ||
+                layoutMap.find(node) != layoutMap.end() ||
+                (node->getReverseComplement() &&
+                 layoutMap.find(node->getReverseComplement()) != layoutMap.end()))
+                continue;
+
+            addToOgdfGraph(node, ogdfGraph, ogdfGraphAttributes, ogdfEdgeLengths,
+                          layoutMap, settings, 0.0, 0.0, false);
+        }
+    } else if (useLinearLayout) {
         determineLinearNodePositions(ogdfGraph, ogdfGraphAttributes, ogdfEdgeLengths,
                                     layoutMap, graph, settings);
     } else {
@@ -388,149 +384,187 @@ static void buildGraph(Graph& ogdfGraph,
     }
 }
 
-struct ReferenceFlatteningFrame {
-    double targetX;
-    double targetY;
-    double sourceTangentX;
-    double sourceTangentY;
-};
-
-static bool findReferenceFlatteningFrame(
-        const DPoint& sourcePoint,
+// Straightens the reference path and lays out everything else attached to it.
+// The path's own coordinates are fully determined analytically (evenly spaced
+// along a straight line) and never touch FMMM at all. Only the *branches*
+// hanging off the path need force-directed placement, and each branch is
+// relaxed in its own small, freshly-built graph containing just its own nodes
+// plus the specific path node(s) it attaches to - not the whole path.
+// Including every path node in one shared force system would turn a long
+// straight run into a dense wall of fixed points whose combined repulsion
+// pushes attached branches far away from their real attachment point, an
+// effect that gets worse with a longer path and doesn't improve with more
+// relax rounds. (GraphCopy::initByNodes can't be used for this: it requires
+// the given node set to be closed under adjacency, which excluding
+// pass-through path nodes deliberately violates.)
+static void runReferencePathRelax(
+        GraphAttributes& GA,
+        const EdgeArray<double>& edgeLengths,
+        const List<ogdf::node>& componentNodes,
         const std::vector<ReferencePathPoint>& pathPoints,
-        ReferenceFlatteningFrame& frame) {
-    double closestSquaredDistance =
-        std::numeric_limits<double>::infinity();
-    bool foundFrame = false;
+        int graphLayoutQuality,
+        double componentSeparation,
+        double aspectRatio,
+        int relaxRounds) {
+    std::unordered_map<ogdf::node, double> targetXByNode;
+    for (const auto& point : pathPoints)
+        targetXByNode[point.node] = point.targetX;
 
-    for (size_t i = 0; i + 1 < pathPoints.size(); ++i) {
-        const auto& first = pathPoints[i];
-        const auto& second = pathPoints[i + 1];
-        double deltaX =
-            second.sourcePosition.m_x - first.sourcePosition.m_x;
-        double deltaY =
-            second.sourcePosition.m_y - first.sourcePosition.m_y;
-        double segmentLengthSquared =
-            deltaX * deltaX + deltaY * deltaY;
-        if (segmentLengthSquared <= 1e-12)
-            continue;
-
-        double relativeX =
-            sourcePoint.m_x - first.sourcePosition.m_x;
-        double relativeY =
-            sourcePoint.m_y - first.sourcePosition.m_y;
-        double projection =
-            (relativeX * deltaX + relativeY * deltaY) /
-            segmentLengthSquared;
-        projection = std::max(0.0, std::min(1.0, projection));
-
-        double projectedX =
-            first.sourcePosition.m_x + projection * deltaX;
-        double projectedY =
-            first.sourcePosition.m_y + projection * deltaY;
-        double distanceX = sourcePoint.m_x - projectedX;
-        double distanceY = sourcePoint.m_y - projectedY;
-        double squaredDistance =
-            distanceX * distanceX + distanceY * distanceY;
-        if (squaredDistance >= closestSquaredDistance)
-            continue;
-
-        double segmentLength = std::sqrt(segmentLengthSquared);
-        double tangentX = deltaX / segmentLength;
-        double tangentY = deltaY / segmentLength;
-        double targetPathX =
-            first.targetX +
-            projection * (second.targetX - first.targetX);
-
-        closestSquaredDistance = squaredDistance;
-        frame.targetX =
-            targetPathX + tangentX * distanceX + tangentY * distanceY;
-        frame.targetY = tangentX * distanceY - tangentY * distanceX;
-        frame.sourceTangentX = tangentX;
-        frame.sourceTangentY = tangentY;
-        foundFrame = true;
-    }
-
-    return foundFrame;
-}
-
-static int linearizeReferencePath(
-        const AssemblyGraph& graph,
-        const std::vector<std::string>& referencePathNodeIds,
-        const OGDFGraphLayout& layout,
-        GraphAttributes& graphAttributes,
-        const NodeArray<int>& componentNumber,
-        const LayoutSettings* settings) {
-    std::vector<ReferencePathPoint> pathPoints;
-    if (!collectReferencePathPoints(graph, referencePathNodeIds, layout,
-                                    graphAttributes, settings, pathPoints))
-        return -1;
-
-    int referenceComponent = componentNumber[pathPoints.front().node];
+    // Path nodes always get their exact analytical position; branches get
+    // relaxed below.
     for (const auto& point : pathPoints) {
-        if (componentNumber[point.node] != referenceComponent)
-            return -1;
+        GA.x(point.node) = point.targetX;
+        GA.y(point.node) = 0.0;
     }
 
-    const Graph& graphForArrays = graphAttributes.constGraph();
-    NodeArray<bool> isReferencePoint(graphForArrays, false);
-    NodeArray<double> referenceTargetX(graphForArrays, 0.0);
-    for (const auto& point : pathPoints) {
-        isReferencePoint[point.node] = true;
-        referenceTargetX[point.node] = point.targetX;
-    }
+    // Group non-path nodes into clusters connected via non-path edges, along
+    // with the set of path nodes each cluster actually attaches to.
+    std::unordered_map<ogdf::node, int> clusterOf;
+    std::vector<std::vector<ogdf::node>> clusterNodes;
+    std::vector<std::set<ogdf::node>> clusterAnchors;
 
-    // Transform each logical node in one local reference frame so its internal
-    // segments cannot be stretched by choosing different path projections.
-    for (const auto& entry : layout) {
-        const auto& segments = entry.second;
-        if (segments.empty() ||
-            componentNumber[segments.front()] != referenceComponent)
+    for (ogdf::node start : componentNodes) {
+        if (targetXByNode.count(start) || clusterOf.count(start))
             continue;
 
-        bool isReferenceNode = false;
-        for (ogdf::node segment : segments) {
-            if (isReferencePoint[segment]) {
-                isReferenceNode = true;
-                break;
+        int clusterId = static_cast<int>(clusterNodes.size());
+        clusterNodes.emplace_back();
+        clusterAnchors.emplace_back();
+        clusterOf[start] = clusterId;
+
+        std::vector<ogdf::node> stack{start};
+        while (!stack.empty()) {
+            ogdf::node v = stack.back();
+            stack.pop_back();
+            clusterNodes[clusterId].push_back(v);
+
+            for (ogdf::adjEntry adj : v->adjEntries) {
+                ogdf::node w = adj->twinNode();
+                if (targetXByNode.count(w)) {
+                    clusterAnchors[clusterId].insert(w);
+                    continue;
+                }
+                if (clusterOf.count(w))
+                    continue;
+                clusterOf[w] = clusterId;
+                stack.push_back(w);
+            }
+        }
+    }
+
+    for (size_t c = 0; c < clusterNodes.size(); ++c) {
+        const std::vector<ogdf::node>& members = clusterNodes[c];
+        const std::set<ogdf::node>& anchors = clusterAnchors[c];
+
+        Graph branchGraph;
+        GraphAttributes branchGA(
+            branchGraph, GraphAttributes::nodeGraphics | GraphAttributes::edgeGraphics);
+        EdgeArray<double> branchEdgeLengths(branchGraph);
+
+        std::unordered_map<ogdf::node, ogdf::node> toBranchNode;
+        for (ogdf::node orig : members) {
+            ogdf::node bn = branchGraph.newNode();
+            toBranchNode[orig] = bn;
+            branchGA.width(bn) = GA.width(orig);
+            branchGA.height(bn) = GA.height(orig);
+        }
+        for (ogdf::node anchorOrig : anchors) {
+            ogdf::node bn = branchGraph.newNode();
+            toBranchNode[anchorOrig] = bn;
+            branchGA.width(bn) = GA.width(anchorOrig);
+            branchGA.height(bn) = GA.height(anchorOrig);
+        }
+
+        std::set<std::pair<ogdf::node, ogdf::node>> addedEdges;
+        for (ogdf::node orig : members) {
+            for (ogdf::adjEntry adj : orig->adjEntries) {
+                auto it = toBranchNode.find(adj->twinNode());
+                if (it == toBranchNode.end())
+                    continue;
+                ogdf::node a = toBranchNode[orig];
+                ogdf::node b = it->second;
+                auto key = a->index() < b->index() ? std::make_pair(a, b)
+                                                    : std::make_pair(b, a);
+                if (!addedEdges.insert(key).second)
+                    continue; // undirected adjacency visits each edge twice
+                ogdf::edge e = branchGraph.newEdge(key.first, key.second);
+                branchEdgeLengths[e] = edgeLengths(adj->theEdge());
             }
         }
 
-        if (isReferenceNode) {
-            for (ogdf::node segment : segments) {
-                graphAttributes.x(segment) = referenceTargetX[segment];
-                graphAttributes.y(segment) = 0.0;
+        // FMMM lays out the branch (anchor included) with its own organic
+        // random initial placement, which gives the branch a good *shape*
+        // but at a location unrelated to the anchor's real, fixed position.
+        // Rigidly translating the whole branch (preserving the shape FMMM
+        // just found) so the anchor lands on its real target fixes that
+        // cheaply. Re-running FMMM again afterward to relax further does NOT
+        // help here - on a small, already-converged branch graph a fresh
+        // FMMM pass tends to destabilize it rather than refine it - so
+        // instead each round is an independent attempt (fresh organic layout
+        // + translation), and whichever attempt leaves its anchor(s) closest
+        // to their real target is kept. With a single anchor the translation
+        // is always exact, so this can only matter - and never hurts - when
+        // a branch reconnects to the path at more than one point.
+        std::unordered_map<ogdf::node, std::pair<double, double>> bestPositions;
+        double bestTension = std::numeric_limits<double>::infinity();
+
+        for (int attempt = 0; attempt < relaxRounds; ++attempt) {
+            FMMGraphLayout initialLayout(graphLayoutQuality, /*useLinearLayout=*/false,
+                                        componentSeparation, aspectRatio);
+            initialLayout.run(branchGA, branchEdgeLengths);
+
+            double sumOffsetX = 0.0, sumOffsetY = 0.0;
+            for (ogdf::node anchorOrig : anchors) {
+                ogdf::node bn = toBranchNode[anchorOrig];
+                sumOffsetX += targetXByNode[anchorOrig] - branchGA.x(bn);
+                sumOffsetY += 0.0 - branchGA.y(bn);
             }
-            continue;
+            double n = static_cast<double>(anchors.size());
+            double offsetX = sumOffsetX / n;
+            double offsetY = sumOffsetY / n;
+            for (ogdf::node orig : members) {
+                ogdf::node bn = toBranchNode[orig];
+                branchGA.x(bn) += offsetX;
+                branchGA.y(bn) += offsetY;
+            }
+            for (ogdf::node anchorOrig : anchors) {
+                ogdf::node bn = toBranchNode[anchorOrig];
+                branchGA.x(bn) += offsetX;
+                branchGA.y(bn) += offsetY;
+            }
+
+            double tension = 0.0;
+            for (ogdf::node anchorOrig : anchors) {
+                ogdf::node bn = toBranchNode[anchorOrig];
+                double dx = branchGA.x(bn) - targetXByNode[anchorOrig];
+                double dy = branchGA.y(bn);
+                tension += dx * dx + dy * dy;
+            }
+
+            if (tension < bestTension) {
+                bestTension = tension;
+                bestPositions.clear();
+                for (ogdf::node v : branchGraph.nodes)
+                    bestPositions[v] = {branchGA.x(v), branchGA.y(v)};
+            }
         }
 
-        DPoint sourceCenter(0.0, 0.0);
-        for (ogdf::node segment : segments) {
-            sourceCenter.m_x += graphAttributes.x(segment);
-            sourceCenter.m_y += graphAttributes.y(segment);
+        for (const auto& entry : bestPositions) {
+            branchGA.x(entry.first) = entry.second.first;
+            branchGA.y(entry.first) = entry.second.second;
         }
-        sourceCenter.m_x /= static_cast<double>(segments.size());
-        sourceCenter.m_y /= static_cast<double>(segments.size());
+        for (ogdf::node anchorOrig : anchors) {
+            ogdf::node bn = toBranchNode[anchorOrig];
+            branchGA.x(bn) = targetXByNode[anchorOrig];
+            branchGA.y(bn) = 0.0;
+        }
 
-        ReferenceFlatteningFrame frame;
-        if (!findReferenceFlatteningFrame(sourceCenter, pathPoints, frame))
-            continue;
-
-        for (ogdf::node segment : segments) {
-            double relativeX = graphAttributes.x(segment) - sourceCenter.m_x;
-            double relativeY = graphAttributes.y(segment) - sourceCenter.m_y;
-            graphAttributes.x(segment) =
-                frame.targetX +
-                frame.sourceTangentX * relativeX +
-                frame.sourceTangentY * relativeY;
-            graphAttributes.y(segment) =
-                frame.targetY -
-                frame.sourceTangentY * relativeX +
-                frame.sourceTangentX * relativeY;
+        for (ogdf::node orig : members) {
+            ogdf::node bn = toBranchNode[orig];
+            GA.x(orig) = branchGA.x(bn);
+            GA.y(orig) = branchGA.y(bn);
         }
     }
-
-    return referenceComponent;
 }
 
 // Rectangle calculation and packing helpers
@@ -723,18 +757,23 @@ GraphLayout layoutGraph(const AssemblyGraph& graph,
                        const std::vector<std::string>& referencePathNodeIds,
                        double componentSeparation,
                        double aspectRatio,
-                       const LayoutSettings* settings) {
+                       const LayoutSettings* settings,
+                       int referencePathRelaxRounds) {
     Graph G;
     EdgeArray<double> edgeLengths(G);
     GraphAttributes GA(G,
                       GraphAttributes::nodeGraphics | GraphAttributes::edgeGraphics);
     OGDFGraphLayout ogdfLayout;
 
-    buildGraph(G, GA, edgeLengths, ogdfLayout, graph, settings, useLinearLayout);
+    bool referencePathRequested = useLinearLayout && !referencePathNodeIds.empty();
+    buildGraph(G, GA, edgeLengths, ogdfLayout, graph, settings, useLinearLayout,
+              referencePathRequested);
+
+    std::vector<ReferencePathPoint> pathPoints;
     bool useReferencePath =
-        useLinearLayout && !referencePathNodeIds.empty() &&
-        positionReferencePathInitially(graph, referencePathNodeIds, ogdfLayout,
-                                       GA, settings);
+        referencePathRequested &&
+        collectReferencePathPoints(graph, referencePathNodeIds, ogdfLayout,
+                                   settings, pathPoints);
 
     // Split into connected components
     NodeArray<int> componentNumber(G);
@@ -743,14 +782,30 @@ GraphLayout layoutGraph(const AssemblyGraph& graph,
     if (numberOfComponents == 0)
         return GraphLayout(graph);
 
+    int referenceComponent = -1;
+    if (useReferencePath) {
+        referenceComponent = componentNumber[pathPoints.front().node];
+        for (const auto& point : pathPoints) {
+            if (componentNumber[point.node] != referenceComponent) {
+                useReferencePath = false;
+                referenceComponent = -1;
+                break;
+            }
+        }
+    }
+
     Array<List<ogdf::node>> nodesInCC(numberOfComponents);
     for (auto v : G.nodes)
         nodesInCC[componentNumber[v]].pushBack(v);
 
     // Layout each component
     for (int i = 0; i < numberOfComponents; i++) {
-        FMMGraphLayout layouter(graphLayoutQuality, useLinearLayout,
-                               componentSeparation, aspectRatio);
+        if (useReferencePath && i == referenceComponent) {
+            runReferencePathRelax(GA, edgeLengths, nodesInCC[i], pathPoints,
+                                  graphLayoutQuality, componentSeparation,
+                                  aspectRatio, referencePathRelaxRounds);
+            continue;
+        }
 
         GraphCopy GC;
         EdgeArray<double> cedgeLengths(GC);
@@ -770,6 +825,12 @@ GraphLayout layoutGraph(const AssemblyGraph& graph,
         for (ogdf::edge e : GC.edges)
             cedgeLengths(e) = edgeLengths(GC.original(e));
 
+        // A reference path (if any) supersedes the plain ID-order linear mode
+        // for every other component too, since "keep everything in one line"
+        // and "straighten just this path" are mutually exclusive.
+        bool linearForThisComponent = useLinearLayout && !referencePathRequested;
+        FMMGraphLayout layouter(graphLayoutQuality, linearForThisComponent,
+                               componentSeparation, aspectRatio);
         layouter.run(cGA, cedgeLengths);
 
         for (ogdf::node v : GC.nodes) {
@@ -779,13 +840,6 @@ GraphLayout layoutGraph(const AssemblyGraph& graph,
                 GA.y(w) = cGA.y(v);
             }
         }
-    }
-
-    int referenceComponent = -1;
-    if (useReferencePath) {
-        referenceComponent = linearizeReferencePath(
-            graph, referencePathNodeIds, ogdfLayout, GA,
-            componentNumber, settings);
     }
 
     reassembleDrawings(GA, componentSeparation, aspectRatio, nodesInCC,

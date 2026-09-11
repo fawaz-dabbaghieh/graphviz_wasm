@@ -57,6 +57,7 @@ function App({ worker }: AppProps) {
     quality: 2,
     linearLayout: false,
     referencePathName: '',
+    referencePathRelaxRounds: 4,
     componentSeparation: 15.0,
     aspectRatio: 1.5,
     nodeLengthPerMegabase: 2000.0,

@@ -200,6 +200,11 @@ val computeLayout(val jsGraph, val jsOptions) {
                                 jsOptions["componentSeparation"].as<double>() : 15.0;
     double aspectRatio = jsOptions.hasOwnProperty("aspectRatio") ?
                         jsOptions["aspectRatio"].as<double>() : 1.333333;
+    int referencePathRelaxRounds =
+        jsOptions.hasOwnProperty("referencePathRelaxRounds") ?
+        jsOptions["referencePathRelaxRounds"].as<int>() : 4;
+    if (referencePathRelaxRounds < 1)
+        referencePathRelaxRounds = 1;
 
     // Create settings
     LayoutSettings settings;
@@ -264,7 +269,7 @@ val computeLayout(val jsGraph, val jsOptions) {
     GraphLayout layoutResult = layout::layoutGraph(*graph, quality, linearLayout,
                                                    referencePathNodeIds,
                                                    componentSeparation, aspectRatio,
-                                                   &settings);
+                                                   &settings, referencePathRelaxRounds);
 
     // Convert to JavaScript object
     val result = layoutToJS(layoutResult);

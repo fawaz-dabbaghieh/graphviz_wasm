@@ -32,6 +32,7 @@ export class BandageLayout {
      * @param {number} options.quality - Layout quality (0-4, default: 1)
      * @param {boolean} options.linearLayout - Use linear layout (default: false)
      * @param {string} options.referencePathName - Path to straighten in linear mode
+     * @param {number} options.referencePathRelaxRounds - Straightening relax rounds when a reference path is set (default: 4)
      * @param {number} options.componentSeparation - Space between components (default: 15.0)
      * @param {number} options.aspectRatio - Desired aspect ratio (default: 1.333333)
      * @param {number} options.nodeLengthPerMegabase - Node length scaling (default: 1000.0)
@@ -55,6 +56,7 @@ export class BandageLayout {
             quality: 1,
             linearLayout: false,
             referencePathName: '',
+            referencePathRelaxRounds: 4,
             componentSeparation: 15.0,
             aspectRatio: 1.333333,
             nodeLengthPerMegabase: 1000.0,

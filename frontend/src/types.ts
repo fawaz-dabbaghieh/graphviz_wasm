@@ -95,6 +95,7 @@ export interface LayoutOptions {
   quality: number
   linearLayout: boolean
   referencePathName: string
+  referencePathRelaxRounds: number
   componentSeparation: number
   aspectRatio: number
   nodeLengthPerMegabase: number

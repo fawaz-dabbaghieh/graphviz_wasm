@@ -1430,10 +1430,25 @@ function GraphCanvasComponent({
     cy2: number,
     x2: number,
     y2: number,
+    maxSampleSpacing: number,
   ): number => {
-    // Sample points along the bezier curve and find minimum distance
+    // Sample points along the bezier curve and find minimum distance. A
+    // fixed sample count leaves gaps between samples that grow with the
+    // curve's length, so long edges could have dead zones in the middle
+    // where hovering directly over the drawn line didn't register as a hit.
+    // The control polygon length is a cheap upper bound on the curve's
+    // actual arc length; sizing the sample count from it keeps consecutive
+    // samples closer together than the hit threshold at any edge length.
+    const controlPolygonLength =
+      Math.hypot(cx1 - x1, cy1 - y1) +
+      Math.hypot(cx2 - cx1, cy2 - cy1) +
+      Math.hypot(x2 - cx2, y2 - cy2)
+    const samples = Math.min(
+      400,
+      Math.max(20, Math.ceil(controlPolygonLength / maxSampleSpacing)),
+    )
+
     let minDist = Infinity
-    const samples = 20 // Number of samples along the curve
 
     for (let i = 0; i <= samples; i++) {
       const t = i / samples
@@ -1707,6 +1722,7 @@ function GraphCanvasComponent({
                 geometry.cp1Shifted.y,
                 geometry.nodeMidShifted.x,
                 geometry.nodeMidShifted.y,
+                edgeThreshold,
               )
 
               const dist2 = distanceToCubicBezier(
@@ -1720,6 +1736,7 @@ function GraphCanvasComponent({
                 geometry.controlPoint2.y,
                 geometry.end.x,
                 geometry.end.y,
+                edgeThreshold,
               )
 
               return Math.min(dist1, dist2)
@@ -1737,6 +1754,7 @@ function GraphCanvasComponent({
                 geometry.pathMidShifted.y,
                 geometry.pathMidPoint.x,
                 geometry.pathMidPoint.y,
+                edgeThreshold,
               )
               const dist2 = distanceToCubicBezier(
                 graphX,
@@ -1749,6 +1767,7 @@ function GraphCanvasComponent({
                 geometry.controlPoint2.y,
                 geometry.end.x,
                 geometry.end.y,
+                edgeThreshold,
               )
               return Math.min(dist1, dist2)
             }
@@ -1764,6 +1783,7 @@ function GraphCanvasComponent({
               geometry.controlPoint2.y,
               geometry.end.x,
               geometry.end.y,
+              edgeThreshold,
             )
           }
 
