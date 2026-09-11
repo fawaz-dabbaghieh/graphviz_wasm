@@ -588,6 +588,16 @@ body:has(.app.dark-mode) {
   margin-top: 4px;
 }
 
+.display-section {
+  margin-bottom: 15px;
+}
+
+.display-section h4 {
+  margin: 0 0 14px 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
 /* Advanced Settings */
 .advanced-settings {
   margin-bottom: 15px;

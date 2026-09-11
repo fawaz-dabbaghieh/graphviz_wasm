@@ -194,6 +194,33 @@ function GraphCanvasComponent({
       ),
     [activeNodePositions, visibleDisplayGraphTopology],
   )
+  // Hover hit-testing walks every node's segments on every mouse move, which
+  // gets expensive on large graphs. A cached bounding box per node lets that
+  // loop skip straight past nodes nowhere near the pointer.
+  const nodeBoundsByKey = useMemo(() => {
+    const bounds = new Map<
+      string,
+      { minX: number; maxX: number; minY: number; maxY: number }
+    >()
+
+    for (const displayNode of displayGraph.nodes) {
+      let minX = Infinity
+      let maxX = -Infinity
+      let minY = Infinity
+      let maxY = -Infinity
+
+      for (const segment of displayNode.segments) {
+        minX = Math.min(minX, segment.x)
+        maxX = Math.max(maxX, segment.x)
+        minY = Math.min(minY, segment.y)
+        maxY = Math.max(maxY, segment.y)
+      }
+
+      bounds.set(displayNode.key, { minX, maxX, minY, maxY })
+    }
+
+    return bounds
+  }, [displayGraph])
   const boundsRef = useRef<{
     minX: number
     maxX: number
@@ -202,6 +229,15 @@ function GraphCanvasComponent({
     fitScale: number
     offsetX: number
     offsetY: number
+  } | null>(null)
+  // Resizing the canvas element clears its backing buffer and resets all
+  // context state, which is expensive and unnecessary on redraws that only
+  // change hover/selection. Track the last-applied size so draw() only
+  // touches canvas.width/height when it actually needs to.
+  const canvasSizeRef = useRef<{
+    width: number
+    height: number
+    dpr: number
   } | null>(null)
 
   const reportInternalZoom = useCallback(
@@ -794,13 +830,25 @@ function GraphCanvasComponent({
     const ctx = canvas.getContext('2d')
     if (!ctx) return
 
-    // Set canvas resolution (force redraw by resetting dimensions)
+    // Only touch canvas.width/height (which clears the backing buffer) when
+    // the resolved size actually changed; every other redraw just repaints.
     const dpr = window.devicePixelRatio || 1
-    canvas.width = width * dpr
-    canvas.height = height * dpr
-    canvas.style.width = width + 'px'
-    canvas.style.height = height + 'px'
-    ctx.scale(dpr, dpr)
+    const lastSize = canvasSizeRef.current
+    if (
+      !lastSize ||
+      lastSize.width !== width ||
+      lastSize.height !== height ||
+      lastSize.dpr !== dpr
+    ) {
+      canvas.width = width * dpr
+      canvas.height = height * dpr
+      canvas.style.width = width + 'px'
+      canvas.style.height = height + 'px'
+      canvasSizeRef.current = { width, height, dpr }
+    }
+    // setTransform (rather than scale) is used so the dpr scale is always
+    // exactly reapplied, regardless of whether the buffer was just reset.
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
 
     // Clear canvas with theme-appropriate background
     ctx.fillStyle = isDarkMode ? '#1a1a1a' : '#ffffff'
@@ -1523,7 +1571,18 @@ function GraphCanvasComponent({
         const nodeThreshold = 5 / scale // Adjust with zoom
 
         for (const displayNode of displayGraph.nodes) {
-          const { representativeId, segments } = displayNode
+          const { key, representativeId, segments } = displayNode
+          const bounds = nodeBoundsByKey.get(key)
+          if (
+            bounds &&
+            (graphX < bounds.minX - nodeThreshold ||
+              graphX > bounds.maxX + nodeThreshold ||
+              graphY < bounds.minY - nodeThreshold ||
+              graphY > bounds.maxY + nodeThreshold)
+          ) {
+            continue
+          }
+
           for (let i = 0; i < segments.length - 1; i++) {
             const dist = distanceToSegment(
               graphX,
@@ -1584,6 +1643,57 @@ function GraphCanvasComponent({
           ): number => {
             const geometry = buildEdgeGeometry(edge, offsetX, offsetY, scale)
             if (!geometry) return Infinity
+
+            // A cubic Bezier curve always lies within the bounding box of its
+            // control points, so this is a cheap, exact-safe way to skip the
+            // 20-sample distance calculation below for edges nowhere near the
+            // pointer.
+            const boundaryPoints =
+              geometry.kind === 'self-loop'
+                ? [
+                    geometry.start,
+                    geometry.controlPoint1,
+                    geometry.cp1Shifted,
+                    geometry.nodeMidShifted,
+                    geometry.cp2Shifted,
+                    geometry.controlPoint2,
+                    geometry.end,
+                  ]
+                : geometry.kind === 'reverse-complement-loop'
+                  ? [
+                      geometry.start,
+                      geometry.controlPoint1,
+                      geometry.pathMidShifted,
+                      geometry.pathMidPoint,
+                      geometry.pathMidShiftedOpposite,
+                      geometry.controlPoint2,
+                      geometry.end,
+                    ]
+                  : [
+                      geometry.start,
+                      geometry.controlPoint1,
+                      geometry.controlPoint2,
+                      geometry.end,
+                    ]
+
+            let boundsMinX = Infinity
+            let boundsMaxX = -Infinity
+            let boundsMinY = Infinity
+            let boundsMaxY = -Infinity
+            for (const point of boundaryPoints) {
+              boundsMinX = Math.min(boundsMinX, point.x)
+              boundsMaxX = Math.max(boundsMaxX, point.x)
+              boundsMinY = Math.min(boundsMinY, point.y)
+              boundsMaxY = Math.max(boundsMaxY, point.y)
+            }
+            if (
+              graphX < boundsMinX - edgeThreshold ||
+              graphX > boundsMaxX + edgeThreshold ||
+              graphY < boundsMinY - edgeThreshold ||
+              graphY > boundsMaxY + edgeThreshold
+            ) {
+              return Infinity
+            }
 
             if (geometry.kind === 'self-loop') {
               const dist1 = distanceToCubicBezier(
@@ -1719,6 +1829,7 @@ function GraphCanvasComponent({
       modifiedNodePositions,
       refs,
       displayGraph,
+      nodeBoundsByKey,
       buildEdgeGeometry,
       getVisiblePathTraversals,
       getEdgeOffsetNormal,
@@ -1984,6 +2095,29 @@ function GraphCanvasComponent({
                       'Not available'
                     )}
                   </div>
+                  {node.tags && Object.keys(node.tags).length > 0 && (
+                    <div>
+                      <strong>Tags:</strong>
+                      <div
+                        style={{
+                          marginTop: '4px',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '2px',
+                          fontFamily:
+                            'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                          fontSize: '12px',
+                          wordBreak: 'break-all',
+                        }}
+                      >
+                        {Object.entries(node.tags).map(([tagName, tagValue]) => (
+                          <div key={tagName}>
+                            {tagName}: {tagValue}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

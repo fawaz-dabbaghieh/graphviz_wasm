@@ -204,7 +204,7 @@ export function BedAnnotationPanel({
 
         <div className="control-group">
           <label htmlFor="annotation-id-column">
-            <strong>Name/ID Col</strong>
+            <strong>Name/ID</strong>
           </label>
           <input
             id="annotation-id-column"
@@ -221,7 +221,7 @@ export function BedAnnotationPanel({
 
         <div className="control-group">
           <label htmlFor="annotation-chromosome-column">
-            <strong>Chromosome Col</strong>
+            <strong>Chromosome</strong>
           </label>
           <input
             id="annotation-chromosome-column"
@@ -240,7 +240,7 @@ export function BedAnnotationPanel({
 
         <div className="control-group">
           <label htmlFor="annotation-start-column">
-            <strong>Start Col</strong>
+            <strong>Start</strong>
           </label>
           <input
             id="annotation-start-column"
@@ -259,7 +259,7 @@ export function BedAnnotationPanel({
 
         <div className="control-group">
           <label htmlFor="annotation-end-column">
-            <strong>End Col</strong>
+            <strong>End</strong>
           </label>
           <input
             id="annotation-end-column"

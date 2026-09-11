@@ -9,6 +9,9 @@ export interface GraphNode {
   // Sequence is optional because mock/example graphs only model summary fields,
   // while imported GFA segments can provide the full nucleotide string.
   sequence?: string
+  // Raw GFA segment tags (dp, RC, KC, ...), kept for display even when a tag
+  // isn't one of the ones the app interprets itself (e.g. depth).
+  tags?: Record<string, string | number>
 }
 
 export interface GraphEdge {

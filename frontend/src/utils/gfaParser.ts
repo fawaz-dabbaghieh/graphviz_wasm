@@ -1,9 +1,21 @@
 function parseTag(tag: string, tags: Record<string, string | number>) {
-  const [name, type, val] = tag.split(':')
-  if (type === 'i') {
-    tags[name] = +val
-  } else if (type === 'Z') {
-    tags[name] = val
+  // Tag values can themselves contain colons (B arrays, J json), so only the
+  // name and type are split off the front; the rest is rejoined as the value.
+  const [name, type, ...valueParts] = tag.split(':')
+  const val = valueParts.join(':')
+  if (!name || !type || !val) return
+
+  switch (type) {
+    case 'i':
+    case 'f':
+      // Both int and float tags (e.g. dp:f:12.5) are stored as numbers so
+      // depth and other numeric tags parse correctly either way.
+      tags[name] = Number(val)
+      break
+    default:
+      // A, Z, H, B, and J tags are all kept as their raw string value so
+      // nothing is silently dropped, even for tag types we don't interpret.
+      tags[name] = val
   }
 }
 

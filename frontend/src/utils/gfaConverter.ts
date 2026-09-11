@@ -67,6 +67,7 @@ export function convertGFAToGraph(
         length: gfaNode.length,
         depth: typeof depth === 'number' ? depth : 1.0,
         sequence: gfaNode.sequence,
+        tags: gfaNode.tags,
       })
     }
 
@@ -78,6 +79,7 @@ export function convertGFAToGraph(
         length: gfaNode.length,
         depth: typeof depth === 'number' ? depth : 1.0,
         sequence: gfaNode.sequence,
+        tags: gfaNode.tags,
       })
     }
   }

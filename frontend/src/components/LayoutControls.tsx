@@ -5,16 +5,6 @@ import type {
   GraphPath,
 } from '../types'
 import { pathHasRepeatedSegments } from '../utils/displayGraph'
-import {
-  MIN_ZOOM,
-  MAX_ZOOM,
-  ZOOM_SLIDER_MIN,
-  ZOOM_SLIDER_MAX,
-  ZOOM_SLIDER_STEP,
-  formatZoomPercent,
-  sliderValueToZoom,
-  zoomToSliderValue,
-} from '../utils/zoom'
 
 interface LayoutControlsProps {
   options: LayoutOptions
@@ -46,8 +36,6 @@ export function LayoutControls({
   isComputing,
   colorScheme,
   onColorSchemeChange,
-  zoom,
-  onZoomChange,
   contigThickness,
   onContigThicknessChange,
   connectorThickness,
@@ -61,11 +49,9 @@ export function LayoutControls({
   hasPathsInGraph,
   paths,
 }: LayoutControlsProps) {
-  // The control panel is split into a "general" section for day-to-day viewing
-  // tweaks and an "advanced" section for layout parameters that can change the
-  // overall geometry more dramatically.
-  const [generalExpanded, setGeneralExpanded] = useState(true)
-  const [advancedExpanded, setAdvancedExpanded] = useState(false)
+  // The zoom slider is temporarily hidden (broken sync with canvas wheel-zoom);
+  // `zoom`/`onZoomChange` stay in the prop contract for when it's re-enabled.
+  const [otherSettingsExpanded, setOtherSettingsExpanded] = useState(false)
   const repeatedReferencePathNames = useMemo(() => {
     const repeatedPaths = new Set<string>()
 
@@ -79,213 +65,116 @@ export function LayoutControls({
 
   return (
     <div className="layout-controls">
-      <div className="advanced-settings">
-        <button
-          className="advanced-toggle"
-          onClick={() => setGeneralExpanded(!generalExpanded)}
-        >
-          <span className={`arrow ${generalExpanded ? 'expanded' : ''}`}>
-            ▶
-          </span>
-          General Settings
-        </button>
+      <div className="display-section">
+        <h4>Display</h4>
 
-        {generalExpanded && (
-          <div className="advanced-content">
-            <div className="control-group">
-              <label>
-                <strong>Color Scheme:</strong>
-              </label>
-              <select
-                value={colorScheme}
-                onChange={e =>
-                  onColorSchemeChange(e.target.value as ColorScheme)
-                }
-                disabled={isComputing}
-                className="color-scheme-select"
-              >
-                <option value="uniform">Uniform Color</option>
-                <option value="random">Rainbow</option>
-                <option value="depth">Color by Depth</option>
-                <option value="grey">Grey</option>
-              </select>
+        <div className="control-group">
+          <label>
+            <input
+              type="checkbox"
+              checked={options.linearLayout}
+              onChange={e =>
+                onChange({ ...options, linearLayout: e.target.checked })
+              }
+              disabled={isComputing}
+            />{' '}
+            Linear Layout
+          </label>
+          <div className="control-hint">
+            Use node-ID ordering, or straighten a selected reference path
+            after force-directed layout.
+          </div>
+        </div>
+
+        {options.linearLayout && hasPathsInGraph && (
+          <div className="control-group">
+            <label htmlFor="reference-path-select">
+              <strong>Reference Path:</strong>
+            </label>
+            <select
+              id="reference-path-select"
+              className="control-select"
+              value={options.referencePathName}
+              onChange={event =>
+                onChange({
+                  ...options,
+                  referencePathName: event.currentTarget.value,
+                })
+              }
+              disabled={isComputing}
+            >
+              <option value="">Node ID order</option>
+              {paths.map(path => {
+                const hasRepeatedSegments =
+                  repeatedReferencePathNames.has(path.name)
+                return (
+                  <option
+                    key={path.name}
+                    value={path.name}
+                    disabled={hasRepeatedSegments}
+                  >
+                    {path.name}
+                    {hasRepeatedSegments
+                      ? ' (repeated segments - unavailable)'
+                      : ''}
+                  </option>
+                )
+              })}
+            </select>
+            <div className="control-hint">
+              Keep the selected path horizontal in traversal order.
             </div>
-
-            <div className="control-group">
-              <label>
-                <strong>Zoom:</strong>
-                <span className="control-value">{formatZoomPercent(zoom)}</span>
-              </label>
-              <input
-                type="range"
-                min={ZOOM_SLIDER_MIN}
-                max={ZOOM_SLIDER_MAX}
-                step={ZOOM_SLIDER_STEP}
-                value={zoomToSliderValue(zoom)}
-                onChange={e =>
-                  onZoomChange(sliderValueToZoom(parseFloat(e.target.value)))
-                }
-                disabled={isComputing}
-              />
-              <div className="control-hint">
-                Zoom in/out on the graph ({formatZoomPercent(MIN_ZOOM)} -{' '}
-                {formatZoomPercent(MAX_ZOOM)})
-              </div>
-            </div>
-
-            <div className="control-group">
-              <label>
-                <strong>Contig Thickness:</strong>
-                <span className="control-value">
-                  {contigThickness.toFixed(1)}px
-                </span>
-              </label>
-              <input
-                type="range"
-                min="1"
-                max="10"
-                step="0.5"
-                value={contigThickness}
-                onChange={e =>
-                  onContigThicknessChange(parseFloat(e.target.value))
-                }
-                disabled={isComputing}
-              />
-              <div className="control-hint">Thickness of contig lines</div>
-            </div>
-
-            <div className="control-group">
-              <label>
-                <strong>Connector Thickness:</strong>
-                <span className="control-value">
-                  {connectorThickness.toFixed(1)}px
-                </span>
-              </label>
-              <input
-                type="range"
-                min="1"
-                max="10"
-                step="0.5"
-                value={connectorThickness}
-                onChange={e =>
-                  onConnectorThicknessChange(parseFloat(e.target.value))
-                }
-                disabled={isComputing}
-              />
-              <div className="control-hint">
-                Thickness of connector lines (edges)
-              </div>
-            </div>
-
-            <div className="control-group">
-              <label>
-                <input
-                  type="checkbox"
-                  checked={options.linearLayout}
-                  onChange={e =>
-                    onChange({ ...options, linearLayout: e.target.checked })
-                  }
-                  disabled={isComputing}
-                />{' '}
-                Linear Layout
-              </label>
-              <div className="control-hint">
-                Use node-ID ordering, or straighten a selected reference path
-                after force-directed layout.
-              </div>
-            </div>
-
-            {options.linearLayout && hasPathsInGraph && (
-              <div className="control-group">
-                <label htmlFor="reference-path-select">
-                  <strong>Reference Path:</strong>
-                </label>
-                <select
-                  id="reference-path-select"
-                  className="control-select"
-                  value={options.referencePathName}
-                  onChange={event =>
-                    onChange({
-                      ...options,
-                      referencePathName: event.currentTarget.value,
-                    })
-                  }
-                  disabled={isComputing}
-                >
-                  <option value="">Node ID order</option>
-                  {paths.map(path => {
-                    const hasRepeatedSegments =
-                      repeatedReferencePathNames.has(path.name)
-                    return (
-                      <option
-                        key={path.name}
-                        value={path.name}
-                        disabled={hasRepeatedSegments}
-                      >
-                        {path.name}
-                        {hasRepeatedSegments
-                          ? ' (repeated segments - unavailable)'
-                          : ''}
-                      </option>
-                    )
-                  })}
-                </select>
-                <div className="control-hint">
-                  Keep the selected path horizontal in traversal order.
-                </div>
-                {repeatedReferencePathNames.size > 0 && (
-                  <div className="control-error">
-                    {repeatedReferencePathNames.size} path
-                    {repeatedReferencePathNames.size === 1 ? '' : 's'} cannot be
-                    used as a reference because they repeat a segment.
-                  </div>
-                )}
+            {repeatedReferencePathNames.size > 0 && (
+              <div className="control-error">
+                {repeatedReferencePathNames.size} path
+                {repeatedReferencePathNames.size === 1 ? '' : 's'} cannot be
+                used as a reference because they repeat a segment.
               </div>
             )}
-
-            <div className="control-group">
-              <label>
-                <input
-                  type="checkbox"
-                  checked={drawLabels}
-                  onChange={e => onDrawLabelsChange(e.target.checked)}
-                  disabled={isComputing}
-                />{' '}
-                Draw Labels
-              </label>
-              <div className="control-hint">Show contig names on the graph</div>
-            </div>
-
-            <div className="control-group">
-              <label>
-                <input
-                  type="checkbox"
-                  checked={drawPaths}
-                  onChange={e => onDrawPathsChange(e.target.checked)}
-                  disabled={isComputing || !hasPathsInGraph}
-                />{' '}
-                List Paths{!hasPathsInGraph && ' (no paths present)'}
-              </label>
-              <div className="control-hint">
-                Show the path list. Select paths there to draw overlays.
-              </div>
-            </div>
           </div>
         )}
+
+        <div className="control-group">
+          <label>
+            <input
+              type="checkbox"
+              checked={drawLabels}
+              onChange={e => onDrawLabelsChange(e.target.checked)}
+              disabled={isComputing}
+            />{' '}
+            Draw Labels
+          </label>
+          <div className="control-hint">Show contig names on the graph</div>
+        </div>
+
+        <div className="control-group">
+          <label>
+            <input
+              type="checkbox"
+              checked={drawPaths}
+              onChange={e => onDrawPathsChange(e.target.checked)}
+              disabled={isComputing || !hasPathsInGraph}
+            />{' '}
+            List Paths{!hasPathsInGraph && ' (no paths present)'}
+          </label>
+          <div className="control-hint">
+            Show the path list. Select paths there to draw overlays.
+          </div>
+        </div>
       </div>
 
       <div className="advanced-settings">
         <button
           className="advanced-toggle"
-          onClick={() => setAdvancedExpanded(!advancedExpanded)}
+          onClick={() => setOtherSettingsExpanded(!otherSettingsExpanded)}
         >
-          <span className={`arrow ${advancedExpanded ? 'expanded' : ''}`}>
+          <span className={`arrow ${otherSettingsExpanded ? 'expanded' : ''}`}>
             ▶
           </span>
-          Advanced Settings
+          Other Settings
         </button>
 
-        {advancedExpanded && (
+        {otherSettingsExpanded && (
           <div className="advanced-content">
             <div className="control-group">
               <label>
@@ -382,6 +271,69 @@ export function LayoutControls({
               />
               <div className="control-hint">
                 Controls visual scale based on sequence length
+              </div>
+            </div>
+
+            <div className="control-group">
+              <label>
+                <strong>Color Scheme:</strong>
+              </label>
+              <select
+                value={colorScheme}
+                onChange={e =>
+                  onColorSchemeChange(e.target.value as ColorScheme)
+                }
+                disabled={isComputing}
+                className="color-scheme-select"
+              >
+                <option value="uniform">Uniform Color</option>
+                <option value="random">Rainbow</option>
+                <option value="depth">Color by Depth</option>
+                <option value="grey">Grey</option>
+              </select>
+            </div>
+
+            <div className="control-group">
+              <label>
+                <strong>Contig Thickness:</strong>
+                <span className="control-value">
+                  {contigThickness.toFixed(1)}px
+                </span>
+              </label>
+              <input
+                type="range"
+                min="1"
+                max="10"
+                step="0.5"
+                value={contigThickness}
+                onChange={e =>
+                  onContigThicknessChange(parseFloat(e.target.value))
+                }
+                disabled={isComputing}
+              />
+              <div className="control-hint">Thickness of contig lines</div>
+            </div>
+
+            <div className="control-group">
+              <label>
+                <strong>Connector Thickness:</strong>
+                <span className="control-value">
+                  {connectorThickness.toFixed(1)}px
+                </span>
+              </label>
+              <input
+                type="range"
+                min="1"
+                max="10"
+                step="0.5"
+                value={connectorThickness}
+                onChange={e =>
+                  onConnectorThicknessChange(parseFloat(e.target.value))
+                }
+                disabled={isComputing}
+              />
+              <div className="control-hint">
+                Thickness of connector lines (edges)
               </div>
             </div>
 

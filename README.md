@@ -48,33 +48,78 @@ the frontend does not request annotation files stored on the server.
 
 ### 1. Start The Go Backend
 
+The gfaidx routes are only registered when the backend runs as `app:
+"foldseek"` — `server.go` gates `RegisterGfaidxApi` on `config.App ==
+AppFoldseek && config.Gfaidx != nil`. Starting the backend with `-app mmseqs`
+(as earlier revisions of this file suggested) leaves every `/api/gfaidx/*`
+and `/api/ticket/gfaidx/*` route unregistered, and the frontend's requests
+will 404.
+
+Running as `foldseek` normally also requires the Foldseek/FoldMason/FoldDisco
+binaries, since `CheckPaths` checks every binary needed by the configured app
+unless `local.delegate` excludes it. `local.delegate` is a slice field, and
+the backend's CLI flag parser only supports scalar (string/bool/number)
+fields — passing `-local.delegate ...` panics with `leaf node type not
+implemented`. A JSON config file is the only way to set `local.delegate`, so
+that's what delegates away the unused Foldseek job types and leaves only the
+gfaidx worker active locally.
+
 The example below uses the ignored development data in
 `MMseqs2-App/gfaidx_test`. From the MMseqs2-App repository:
 
 ```bash
 conda activate mmseqs2-app
 mkdir -p /private/tmp/mmseqs-gfaidx-api/{databases,jobs,tmp}
-cd backend
-go run . \
-  -local \
-  -app mmseqs \
-  -server.address 127.0.0.1:18081 \
-  -server.pathprefix /api \
-  -server.cors true \
-  -paths.mmseqs ../resources/mac/arm64/mmseqs \
-  -paths.databases /private/tmp/mmseqs-gfaidx-api/databases \
-  -paths.results /private/tmp/mmseqs-gfaidx-api/jobs \
-  -paths.temporary /private/tmp/mmseqs-gfaidx-api/tmp \
-  -gfaidx.binary ../gfaidx_test/bin/gfaidx \
-  -gfaidx.databases ../gfaidx_test \
-  -gfaidx.timeoutseconds 120 \
-  -gfaidx.maxthreads 2
 ```
 
-The paths above are for the current Apple Silicon test setup. Adjust the
-`mmseqs`, `gfaidx`, database, and temporary paths for another machine. Graphs
-are registered by server-controlled `<graph-id>.params` files; graph file paths
-are never accepted from browser requests.
+Save the following as `/private/tmp/mmseqs-gfaidx-api/config.json`, adjusting
+the absolute paths for your machine:
+
+```json
+{
+  "app": "foldseek",
+  "server": {
+    "address": "127.0.0.1:18081",
+    "pathprefix": "/api",
+    "cors": true
+  },
+  "paths": {
+    "databases": "/private/tmp/mmseqs-gfaidx-api/databases",
+    "results": "/private/tmp/mmseqs-gfaidx-api/jobs",
+    "temporary": "/private/tmp/mmseqs-gfaidx-api/tmp"
+  },
+  "local": {
+    "workers": 1,
+    "checkold": true,
+    "delegate": [
+      "search", "index", "msa", "nuclmsa", "pair",
+      "structuresearch", "rnasearch", "complexsearch", "interfacesearch",
+      "foldmasoneasymsa", "folddisco"
+    ]
+  },
+  "gfaidx": {
+    "binary": "/path/to/MMseqs2-App/gfaidx_test/bin/gfaidx",
+    "databases": "/path/to/MMseqs2-App/gfaidx_test",
+    "timeoutseconds": 120,
+    "maxthreads": 2
+  }
+}
+```
+
+`local.delegate` lists every MMseqs/Foldseek job type so the local process
+never needs those binaries; `gfaidx` is deliberately left off the list so it
+keeps running on this machine. `gfaidx.binary`/`gfaidx.databases` follow the
+same `~`-relative convention as the other binary paths.
+
+Then start the backend from the MMseqs2-App repository:
+
+```bash
+cd backend
+go run . -local -config /private/tmp/mmseqs-gfaidx-api/config.json
+```
+
+Graphs are registered by server-controlled `<graph-id>.params` files; graph
+file paths are never accepted from browser requests.
 
 Confirm that the backend can see the test graph:
 
