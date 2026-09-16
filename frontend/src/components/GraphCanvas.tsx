@@ -25,6 +25,105 @@ import {
 } from '../utils/displayGraph'
 import { clampZoom } from '../utils/zoom'
 
+// A point in the reference-path coordinate ruler's piecewise-linear mapping
+// between a node's world-space x position and its base-pair offset along the
+// path. Two per node (its start and end) rather than one per node boundary,
+// so the small world-space gap the layouter leaves between consecutive nodes
+// maps to a flat (zero bp-per-pixel) span instead of diluting a real node's
+// bp-per-pixel ratio.
+interface PathCoordinateBreakpoint {
+  worldX: number
+  bp: number
+}
+
+function worldXToBp(
+  breakpoints: PathCoordinateBreakpoint[],
+  worldX: number,
+): number {
+  const first = breakpoints[0]!
+  const last = breakpoints[breakpoints.length - 1]!
+  if (worldX <= first.worldX) return first.bp
+  if (worldX >= last.worldX) return last.bp
+
+  for (let i = 0; i + 1 < breakpoints.length; i++) {
+    const a = breakpoints[i]!
+    const b = breakpoints[i + 1]!
+    if (worldX >= a.worldX && worldX <= b.worldX) {
+      if (b.worldX === a.worldX) return a.bp
+      const t = (worldX - a.worldX) / (b.worldX - a.worldX)
+      return a.bp + t * (b.bp - a.bp)
+    }
+  }
+  return last.bp
+}
+
+function bpToWorldX(
+  breakpoints: PathCoordinateBreakpoint[],
+  bp: number,
+): number | null {
+  const first = breakpoints[0]!
+  const last = breakpoints[breakpoints.length - 1]!
+  if (bp < first.bp || bp > last.bp) return null
+
+  for (let i = 0; i + 1 < breakpoints.length; i++) {
+    const a = breakpoints[i]!
+    const b = breakpoints[i + 1]!
+    if (bp >= a.bp && bp <= b.bp) {
+      if (b.bp === a.bp) return a.worldX
+      const t = (bp - a.bp) / (b.bp - a.bp)
+      return a.worldX + t * (b.worldX - a.worldX)
+    }
+  }
+  return last.worldX
+}
+
+// "Nice numbers" axis ticking (Heckbert): picks a human-friendly step (1, 2,
+// or 5 times a power of ten) so tick density stays readable at any zoom
+// level instead of e.g. landing on every 137 bp.
+function niceNumber(value: number, round: boolean): number {
+  if (value <= 0) return 1
+  const exponent = Math.floor(Math.log10(value))
+  const fraction = value / Math.pow(10, exponent)
+  let niceFraction: number
+  if (round) {
+    if (fraction < 1.5) niceFraction = 1
+    else if (fraction < 3) niceFraction = 2
+    else if (fraction < 7) niceFraction = 5
+    else niceFraction = 10
+  } else {
+    if (fraction <= 1) niceFraction = 1
+    else if (fraction <= 2) niceFraction = 2
+    else if (fraction <= 5) niceFraction = 5
+    else niceFraction = 10
+  }
+  return niceFraction * Math.pow(10, exponent)
+}
+
+function computeNiceTicks(
+  min: number,
+  max: number,
+  desiredCount: number,
+): number[] {
+  if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) return []
+
+  const range = niceNumber(max - min, false)
+  // bp positions are discrete, so the step can never usefully drop below 1.
+  const step = Math.max(1, niceNumber(range / Math.max(1, desiredCount - 1), true))
+  const niceMin = Math.floor(min / step) * step
+  const niceMax = Math.ceil(max / step) * step
+
+  const ticks: number[] = []
+  for (let value = niceMin; value <= niceMax + step * 0.5; value += step) {
+    if (value >= min - step && value <= max + step) ticks.push(Math.round(value))
+  }
+  return ticks
+}
+
+function formatCoordinateLabel(bp: number, sequenceName: string | null): string {
+  const formatted = Math.round(bp).toLocaleString()
+  return sequenceName ? `${sequenceName}:${formatted}` : formatted
+}
+
 interface GraphCanvasProps {
   layoutResult: LayoutResult
   graph: Graph
@@ -42,6 +141,10 @@ interface GraphCanvasProps {
   drawLabels?: boolean
   labelLengthThreshold?: number
   drawPaths?: boolean
+  // Drives the reference-path coordinate ruler: only a straightened path has
+  // a single meaningful coordinate axis to draw ticks along.
+  linearLayout?: boolean
+  referencePathName?: string
   // The selector hands the canvas the exact set of path IDs that should remain
   // visible without changing the underlying graph model.
   visiblePathIds?: Set<string>
@@ -110,6 +213,8 @@ function GraphCanvasComponent({
   drawLabels = true,
   labelLengthThreshold = 0,
   drawPaths = true,
+  linearLayout = false,
+  referencePathName = '',
   visiblePathIds,
   filterToSelectedPaths = false,
   nodeColorOverrides,
@@ -166,6 +271,51 @@ function GraphCanvasComponent({
     () => modifiedNodePositions || layoutResult.nodePositions,
     [layoutResult.nodePositions, modifiedNodePositions],
   )
+  // Piecewise-linear world-x <-> bp mapping for the reference-path coordinate
+  // ruler, built by walking the straightened path's nodes in order. Genomic
+  // coordinates come from GFA W-line walk metadata when present (sequenceStart
+  // anchors the first node); otherwise this falls back to a 0-based distance
+  // from the path's start.
+  const referencePathCoordinates = useMemo(() => {
+    if (!linearLayout || !referencePathName) return null
+
+    const path = graph.paths?.find(p => p.name === referencePathName)
+    if (!path || path.nodeIds.length === 0) return null
+
+    const nodeById = new Map(graph.nodes.map(node => [node.id, node]))
+
+    const rawStart = path.walk?.sequenceStart
+    const parsedStart = rawStart !== undefined ? Number(rawStart) : NaN
+    let cumulativeBp = Number.isFinite(parsedStart) ? parsedStart : 0
+
+    const breakpoints: PathCoordinateBreakpoint[] = []
+
+    for (const nodeId of path.nodeIds) {
+      const segments = activeNodePositions[nodeId]
+      const node = nodeById.get(nodeId)
+      if (!segments || segments.length === 0 || !node) continue
+
+      let segMinX = Infinity
+      let segMaxX = -Infinity
+      for (const segment of segments) {
+        segMinX = Math.min(segMinX, segment.x)
+        segMaxX = Math.max(segMaxX, segment.x)
+      }
+
+      breakpoints.push({ worldX: segMinX, bp: cumulativeBp })
+      cumulativeBp += node.length
+      breakpoints.push({ worldX: segMaxX, bp: cumulativeBp })
+    }
+
+    if (breakpoints.length < 2) return null
+
+    return {
+      sequenceName: path.walk?.sequenceName ?? null,
+      minWorldX: breakpoints[0]!.worldX,
+      maxWorldX: breakpoints[breakpoints.length - 1]!.worldX,
+      breakpoints,
+    }
+  }, [graph, activeNodePositions, linearLayout, referencePathName])
   const displayGraphTopology = useMemo(
     () => buildDisplayGraph(graph, layoutResult.nodePositions),
     [graph, layoutResult.nodePositions],
@@ -877,6 +1027,17 @@ function GraphCanvasComponent({
       }
     }
 
+    // Inverse of transformPoint - used to approximate which part of the
+    // reference path (a fixed world-space line) is currently visible.
+    const screenToWorld = (screenX: number, screenY: number) => {
+      const sx = screenX - translateX
+      const sy = screenY - translateY
+      return {
+        x: (sx * rotationCosine + sy * rotationSine) / scale,
+        y: (-sx * rotationSine + sy * rotationCosine) / scale,
+      }
+    }
+
     // Helper function to draw an arrowhead at a point
     const drawArrowhead = (
       ctx: CanvasRenderingContext2D,
@@ -1281,6 +1442,97 @@ function GraphCanvasComponent({
         ctx.fillText(node.name, midPoint.x, midPoint.y - 5)
       }
     })
+
+    // Reference-path coordinate ruler: only a straightened path has a single
+    // meaningful coordinate axis, so this is skipped otherwise. Ticks are
+    // drawn along the path's actual on-screen position/angle (not pinned to
+    // the bottom of the canvas) so they stay correct under rotation.
+    if (referencePathCoordinates) {
+      const { breakpoints, minWorldX, maxWorldX, sequenceName } =
+        referencePathCoordinates
+
+      // The bounding box of the inverse-transformed canvas corners over-
+      // estimates the visible range when the view is rotated, but that just
+      // means a few extra tick candidates get computed - each is still
+      // individually clipped to the canvas below before it's drawn.
+      const corners = [
+        screenToWorld(0, 0),
+        screenToWorld(width, 0),
+        screenToWorld(width, height),
+        screenToWorld(0, height),
+      ]
+      let visibleMinX = Infinity
+      let visibleMaxX = -Infinity
+      for (const corner of corners) {
+        visibleMinX = Math.min(visibleMinX, corner.x)
+        visibleMaxX = Math.max(visibleMaxX, corner.x)
+      }
+      visibleMinX = Math.max(visibleMinX, minWorldX)
+      visibleMaxX = Math.min(visibleMaxX, maxWorldX)
+
+      if (visibleMinX < visibleMaxX) {
+        const visibleMinBp = worldXToBp(breakpoints, visibleMinX)
+        const visibleMaxBp = worldXToBp(breakpoints, visibleMaxX)
+        const desiredTickCount = Math.max(2, Math.floor(width / 150))
+        const tickValues = computeNiceTicks(
+          visibleMinBp,
+          visibleMaxBp,
+          desiredTickCount,
+        )
+
+        const tickOffsetWorld = 16 / scale
+        const tickLengthWorld = 6 / scale
+        const clipMargin = 24
+
+        ctx.save()
+        ctx.strokeStyle = isDarkMode ? '#888' : '#555'
+        ctx.fillStyle = isDarkMode ? '#ccc' : '#333'
+        ctx.font = '10px monospace'
+        ctx.textAlign = 'center'
+        ctx.textBaseline = 'top'
+        ctx.lineWidth = 1
+
+        const baselineStart = transformPoint(minWorldX, tickOffsetWorld)
+        const baselineEnd = transformPoint(maxWorldX, tickOffsetWorld)
+        ctx.beginPath()
+        ctx.moveTo(baselineStart.x, baselineStart.y)
+        ctx.lineTo(baselineEnd.x, baselineEnd.y)
+        ctx.stroke()
+
+        for (const bp of tickValues) {
+          const worldX = bpToWorldX(breakpoints, bp)
+          if (worldX === null) continue
+
+          const tickStart = transformPoint(worldX, tickOffsetWorld)
+          const tickEnd = transformPoint(
+            worldX,
+            tickOffsetWorld + tickLengthWorld,
+          )
+
+          if (
+            tickEnd.x < -clipMargin ||
+            tickEnd.x > width + clipMargin ||
+            tickEnd.y < -clipMargin ||
+            tickEnd.y > height + clipMargin
+          ) {
+            continue
+          }
+
+          ctx.beginPath()
+          ctx.moveTo(tickStart.x, tickStart.y)
+          ctx.lineTo(tickEnd.x, tickEnd.y)
+          ctx.stroke()
+
+          ctx.fillText(
+            formatCoordinateLabel(bp, sequenceName),
+            tickEnd.x,
+            tickEnd.y + 2,
+          )
+        }
+
+        ctx.restore()
+      }
+    }
   }, [
     layoutResult,
     graph,
@@ -1304,6 +1556,7 @@ function GraphCanvasComponent({
     labelLengthThreshold,
     drawPaths,
     visiblePathIds,
+    referencePathCoordinates,
   ])
 
   // Redraw when any state changes

@@ -66,6 +66,11 @@ function App({ worker }: AppProps) {
     edgeLength: 2.0,
   })
   const [layoutResult, setLayoutResult] = useState<LayoutResult | null>(null)
+  // Snapshot of the options that actually produced layoutResult, distinct
+  // from the live layoutOptions state: the coordinate ruler needs to know
+  // what's really drawn, not what's pending in the controls until Redraw.
+  const [appliedLayoutOptions, setAppliedLayoutOptions] =
+    useState<LayoutOptions | null>(null)
   const [layoutDuration, setLayoutDuration] = useState<number | null>(null)
   const [isComputing, setIsComputing] = useState(false)
   const [fileMenuOpen, setFileMenuOpen] = useState(false)
@@ -475,6 +480,14 @@ function App({ worker }: AppProps) {
         setCurrentGraph(graph)
         setColorScheme('uniform')
         setDrawLabels(false)
+        // Linear layout and path display both key off path names from the
+        // previous graph, which almost never exist in a newly loaded one.
+        setLayoutOptions(current => ({
+          ...current,
+          linearLayout: false,
+          referencePathName: '',
+        }))
+        setDrawPaths(false)
         setFileMenuOpen(false)
         setExamplesMenuOpen(false)
       } catch (error) {
@@ -888,6 +901,7 @@ function App({ worker }: AppProps) {
       )
       setLayoutResult(result)
       setLayoutDuration(duration)
+      setAppliedLayoutOptions(effectiveLayoutOptions)
     } catch (error) {
       console.error('Layout computation failed:', error)
     } finally {
@@ -920,6 +934,7 @@ function App({ worker }: AppProps) {
         if (currentRequestId === requestIdRef.current) {
           setLayoutResult(result)
           setLayoutDuration(duration)
+          setAppliedLayoutOptions(effectiveLayoutOptions)
           setIsComputing(false)
         }
       } catch (error) {
@@ -1310,6 +1325,10 @@ function App({ worker }: AppProps) {
                     drawLabels={drawLabels}
                     labelLengthThreshold={labelLengthThreshold}
                     drawPaths={drawPaths}
+                    linearLayout={appliedLayoutOptions?.linearLayout ?? false}
+                    referencePathName={
+                      appliedLayoutOptions?.referencePathName ?? ''
+                    }
                     visiblePathIds={visiblePathNameSet}
                     filterToSelectedPaths={filterToSelectedPaths}
                     nodeColorOverrides={nodeColorOverrides}
