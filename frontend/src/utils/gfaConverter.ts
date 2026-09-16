@@ -75,13 +75,19 @@ function synthesizeRGFAReferencePaths(
   for (const [sequenceName, segments] of bySequence) {
     segments.sort((a, b) => (a.tags.SO as number) - (b.tags.SO as number))
 
-    const nodeIds = segments
-      .map(segment => `${segment.id}+`)
-      .filter(id => existingNodeIds.has(id))
-    if (nodeIds.length === 0) continue
+    // Filter the segments themselves (not just the derived ids) so the
+    // coordinate span below is always computed from the same segments that
+    // actually end up in nodeIds - otherwise a segment dropped here (its "+"
+    // orientation never used in an edge) would leave sequenceEnd covering
+    // more than the path it actually describes.
+    const usableSegments = segments.filter(segment =>
+      existingNodeIds.has(`${segment.id}+`),
+    )
+    if (usableSegments.length === 0) continue
 
-    const firstSegment = segments[0]!
-    const lastSegment = segments[segments.length - 1]!
+    const nodeIds = usableSegments.map(segment => `${segment.id}+`)
+    const firstSegment = usableSegments[0]!
+    const lastSegment = usableSegments[usableSegments.length - 1]!
     const lastLength =
       typeof lastSegment.tags.LN === 'number'
         ? lastSegment.tags.LN
