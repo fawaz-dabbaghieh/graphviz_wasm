@@ -1444,9 +1444,13 @@ function GraphCanvasComponent({
     })
 
     // Reference-path coordinate ruler: only a straightened path has a single
-    // meaningful coordinate axis, so this is skipped otherwise. Ticks are
-    // drawn along the path's actual on-screen position/angle (not pinned to
-    // the bottom of the canvas) so they stay correct under rotation.
+    // meaningful coordinate axis, so this is skipped otherwise. The ruler is
+    // pinned to a fixed row at the bottom of the canvas (screen space) so it
+    // stays visible while zooming/panning instead of scrolling off-screen
+    // along with wherever the path currently sits; only the tick x-positions
+    // still track the current pan/zoom. Under heavy view rotation the ticks
+    // can bunch up since the path's screen-x spread shrinks as it turns
+    // vertical - an accepted trade-off for always staying on screen.
     if (referencePathCoordinates) {
       const { breakpoints, minWorldX, maxWorldX, sequenceName } =
         referencePathCoordinates
@@ -1480,11 +1484,17 @@ function GraphCanvasComponent({
           desiredTickCount,
         )
 
-        const tickOffsetWorld = 16 / scale
-        const tickLengthWorld = 6 / scale
+        const rulerY = height - 28
+        const tickLength = 6
         const clipMargin = 24
 
         ctx.save()
+
+        // Opaque backdrop keeps labels legible over whatever graph content
+        // ends up underneath now that the ruler doesn't move with it.
+        ctx.fillStyle = isDarkMode ? '#1a1a1a' : '#ffffff'
+        ctx.fillRect(0, rulerY - 4, width, height - (rulerY - 4))
+
         ctx.strokeStyle = isDarkMode ? '#888' : '#555'
         ctx.fillStyle = isDarkMode ? '#ccc' : '#333'
         ctx.font = '10px monospace'
@@ -1492,41 +1502,31 @@ function GraphCanvasComponent({
         ctx.textBaseline = 'top'
         ctx.lineWidth = 1
 
-        const baselineStart = transformPoint(minWorldX, tickOffsetWorld)
-        const baselineEnd = transformPoint(maxWorldX, tickOffsetWorld)
+        const baselineStartX = transformPoint(minWorldX, 0).x
+        const baselineEndX = transformPoint(maxWorldX, 0).x
         ctx.beginPath()
-        ctx.moveTo(baselineStart.x, baselineStart.y)
-        ctx.lineTo(baselineEnd.x, baselineEnd.y)
+        ctx.moveTo(baselineStartX, rulerY)
+        ctx.lineTo(baselineEndX, rulerY)
         ctx.stroke()
 
         for (const bp of tickValues) {
           const worldX = bpToWorldX(breakpoints, bp)
           if (worldX === null) continue
 
-          const tickStart = transformPoint(worldX, tickOffsetWorld)
-          const tickEnd = transformPoint(
-            worldX,
-            tickOffsetWorld + tickLengthWorld,
-          )
-
-          if (
-            tickEnd.x < -clipMargin ||
-            tickEnd.x > width + clipMargin ||
-            tickEnd.y < -clipMargin ||
-            tickEnd.y > height + clipMargin
-          ) {
+          const screenX = transformPoint(worldX, 0).x
+          if (screenX < -clipMargin || screenX > width + clipMargin) {
             continue
           }
 
           ctx.beginPath()
-          ctx.moveTo(tickStart.x, tickStart.y)
-          ctx.lineTo(tickEnd.x, tickEnd.y)
+          ctx.moveTo(screenX, rulerY)
+          ctx.lineTo(screenX, rulerY + tickLength)
           ctx.stroke()
 
           ctx.fillText(
             formatCoordinateLabel(bp, sequenceName),
-            tickEnd.x,
-            tickEnd.y + 2,
+            screenX,
+            rulerY + tickLength + 2,
           )
         }
 
