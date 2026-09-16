@@ -33,8 +33,15 @@ interface AppProps {
 }
 
 function getConfiguredBackendUrl(): string {
-  return import.meta.env.VITE_BACKEND_URL || 'http://127.0.0.1:18081'
+  return import.meta.env.VITE_BACKEND_URL || 'https://search-dev.foldseek.com'
 }
+
+// Hidden for now: the deployed site should just point at the shared backend
+// above without exposing a user-facing override control. The underlying
+// localStorage override (see getDefaultBackendUrl) still works from devtools
+// if a different backend is ever needed for testing; flip this back on to
+// restore the visible control.
+const SHOW_BACKEND_URL_CONTROL = false
 
 function getDefaultBackendUrl(): string {
   // Host-mode development uses the Vite API proxy. Prefer that configured URL
@@ -1117,26 +1124,30 @@ function App({ worker }: AppProps) {
               )}
             </div>
           </div>
-          <form
-            className="backend-url-control"
-            onSubmit={event => {
-              event.preventDefault()
-              handleApplyBackendUrl()
-            }}
-          >
-            <label htmlFor="backend-url-input">Backend</label>
-            <input
-              id="backend-url-input"
-              type="url"
-              value={backendUrlInput}
-              onChange={event => setBackendUrlInput(event.currentTarget.value)}
-              placeholder="http://192.168.1.10:18081"
-            />
-            <button type="submit">Apply</button>
-            <button type="button" onClick={handleResetBackendUrl}>
-              Reset
-            </button>
-          </form>
+          {SHOW_BACKEND_URL_CONTROL && (
+            <form
+              className="backend-url-control"
+              onSubmit={event => {
+                event.preventDefault()
+                handleApplyBackendUrl()
+              }}
+            >
+              <label htmlFor="backend-url-input">Backend</label>
+              <input
+                id="backend-url-input"
+                type="url"
+                value={backendUrlInput}
+                onChange={event =>
+                  setBackendUrlInput(event.currentTarget.value)
+                }
+                placeholder="http://192.168.1.10:18081"
+              />
+              <button type="submit">Apply</button>
+              <button type="button" onClick={handleResetBackendUrl}>
+                Reset
+              </button>
+            </form>
+          )}
         </div>
       </header>
 
