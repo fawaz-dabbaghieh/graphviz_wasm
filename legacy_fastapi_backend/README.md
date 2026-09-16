@@ -1,7 +1,10 @@
-# Backend
+# Backend (archived)
 
-This directory is reserved for the API service that will run `gfaidx` on
-server-side indexed graphs and return extracted GFA subgraphs to the frontend.
+Superseded by the Go backend (soedinglab/MMseqs2-App), which now runs in
+production. Kept here for reference; not used by the frontend anymore.
+
+This directory was the API service that ran `gfaidx` on server-side indexed
+graphs and returned extracted GFA subgraphs to the frontend.
 
 Current minimal shape:
 
