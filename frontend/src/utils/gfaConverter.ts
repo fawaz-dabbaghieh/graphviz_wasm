@@ -1,5 +1,11 @@
-import type { Graph, GraphNode, GraphEdge, GraphPath } from '../types'
-import type { GFAGraph } from './gfaParser'
+import type {
+  Graph,
+  GraphNode,
+  GraphEdge,
+  GraphPath,
+  GraphWalkMetadata,
+} from '../types'
+import type { GFAGraph, GFANode } from './gfaParser'
 
 /**
  * Parse CIGAR string to extract overlap information
@@ -17,6 +23,81 @@ function parseCigarOverlap(cigar: string): number {
     const num = parseInt(match.slice(0, -1))
     return sum + num
   }, 0)
+}
+
+// Splits a PanSN-style "sample#haplotype#sequence" name into its parts,
+// matching the convention W-lines already use, so rGFA-derived paths display
+// the same way. Falls back to putting the whole name in sequenceName.
+function parsePanSNName(name: string): {
+  sampleName: string
+  haplotypeIndex: string
+  sequenceName: string
+} {
+  const parts = name.split('#')
+  if (parts.length === 3) {
+    return {
+      sampleName: parts[0]!,
+      haplotypeIndex: parts[1]!,
+      sequenceName: parts[2]!,
+    }
+  }
+  return { sampleName: '', haplotypeIndex: '', sequenceName: name }
+}
+
+// minigraph-style rGFA graphs tag each backbone segment with SN (reference
+// sequence name), SO (0-based offset on that sequence), and SR (rank; 0 means
+// the segment is on the reference backbone itself) instead of encoding an
+// explicit P/W path. Rank-0 segments for a given SN, sorted by SO, are
+// exactly the reference path - synthesizing a GraphPath from them lets linear
+// layout and the coordinate ruler work the same way they already do for real
+// P/W paths, with neither needing to know the difference.
+function synthesizeRGFAReferencePaths(
+  gfaNodes: GFANode[],
+  existingNodeIds: Set<string>,
+): GraphPath[] {
+  const bySequence = new Map<string, GFANode[]>()
+
+  for (const node of gfaNodes) {
+    if (node.tags.SR !== 0) continue
+    const sequenceName = node.tags.SN
+    if (typeof sequenceName !== 'string' || !sequenceName) continue
+    if (typeof node.tags.SO !== 'number') continue
+
+    const group = bySequence.get(sequenceName)
+    if (group) {
+      group.push(node)
+    } else {
+      bySequence.set(sequenceName, [node])
+    }
+  }
+
+  const paths: GraphPath[] = []
+  for (const [sequenceName, segments] of bySequence) {
+    segments.sort((a, b) => (a.tags.SO as number) - (b.tags.SO as number))
+
+    const nodeIds = segments
+      .map(segment => `${segment.id}+`)
+      .filter(id => existingNodeIds.has(id))
+    if (nodeIds.length === 0) continue
+
+    const firstSegment = segments[0]!
+    const lastSegment = segments[segments.length - 1]!
+    const lastLength =
+      typeof lastSegment.tags.LN === 'number'
+        ? lastSegment.tags.LN
+        : lastSegment.length
+
+    const walk: GraphWalkMetadata = {
+      ...parsePanSNName(sequenceName),
+      sequenceStart: String(firstSegment.tags.SO),
+      sequenceEnd: String((lastSegment.tags.SO as number) + lastLength),
+      tags: [],
+    }
+
+    paths.push({ name: sequenceName, nodeIds, recordType: 'W', walk })
+  }
+
+  return paths
 }
 
 /**
@@ -109,6 +190,19 @@ export function convertGFAToGraph(
   // overlay and filter path-specific connectors later.
   const edgeToPathsMap = new Map<string, Set<string>>()
 
+  const markPathEdges = (nodeIds: string[], pathName: string) => {
+    for (let i = 0; i < nodeIds.length - 1; i++) {
+      const from = nodeIds[i]!
+      const to = nodeIds[i + 1]!
+      const edgeKey = `${from}->${to}`
+
+      if (!edgeToPathsMap.has(edgeKey)) {
+        edgeToPathsMap.set(edgeKey, new Set())
+      }
+      edgeToPathsMap.get(edgeKey)!.add(pathName)
+    }
+  }
+
   for (const gfaPath of gfaGraph.paths) {
     // Parse path string (format: node1+,node2-,node3+,...)
     const pathSegments = gfaPath.path.split(',')
@@ -127,17 +221,19 @@ export function convertGFAToGraph(
       walk: gfaPath.walk,
     })
 
-    // Mark which edges are used by this path
-    for (let i = 0; i < nodeIds.length - 1; i++) {
-      const from = nodeIds[i]!
-      const to = nodeIds[i + 1]!
-      const edgeKey = `${from}->${to}`
+    markPathEdges(nodeIds, gfaPath.name)
+  }
 
-      if (!edgeToPathsMap.has(edgeKey)) {
-        edgeToPathsMap.set(edgeKey, new Set())
-      }
-      edgeToPathsMap.get(edgeKey)!.add(gfaPath.name)
-    }
+  // minigraph-style rGFA graphs have no P/W lines at all; synthesize the
+  // reference path(s) from segment SN/SO/SR tags instead so linear layout
+  // and the coordinate ruler still have a path to work with.
+  const existingNodeIds = new Set(nodes.map(node => node.id))
+  for (const rgfaPath of synthesizeRGFAReferencePaths(
+    gfaGraph.nodes,
+    existingNodeIds,
+  )) {
+    paths.push(rgfaPath)
+    markPathEdges(rgfaPath.nodeIds, rgfaPath.name)
   }
 
   // Add path information to edges
