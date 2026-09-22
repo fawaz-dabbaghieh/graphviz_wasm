@@ -561,16 +561,18 @@ export function GraphExtractionControls({
                           text={
                             '0-based, inclusive - matches BED-style ' +
                             'coordinates, not the 1-based numbering some ' +
-                            'genome browsers display.'
+                            'genome browsers display. "." or "," thousands ' +
+                            'separators are fine, e.g. 2,500,000 or ' +
+                            '2.500.000.'
                           }
                         />
                       </label>
                       <input
                         id="region-start"
                         className="control-input"
-                        type="number"
-                        min="0"
-                        step="1"
+                        type="text"
+                        inputMode="numeric"
+                        placeholder="e.g. 2,500,000"
                         value={regionStart}
                         onChange={event =>
                           onRegionStartChange(event.currentTarget.value)
@@ -582,14 +584,20 @@ export function GraphExtractionControls({
                     <div className="control-group">
                       <label htmlFor="region-end">
                         End
-                        <HelpIcon text="0-based, exclusive - the base at this position itself is not included." />
+                        <HelpIcon
+                          text={
+                            '0-based, exclusive - the base at this ' +
+                            'position itself is not included. "." or "," ' +
+                            'thousands separators are fine.'
+                          }
+                        />
                       </label>
                       <input
                         id="region-end"
                         className="control-input"
-                        type="number"
-                        min="1"
-                        step="1"
+                        type="text"
+                        inputMode="numeric"
+                        placeholder="e.g. 2,600,000"
                         value={regionEnd}
                         onChange={event =>
                           onRegionEndChange(event.currentTarget.value)

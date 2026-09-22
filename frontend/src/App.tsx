@@ -57,6 +57,13 @@ function normalizeBackendUrl(url: string): string {
   return url.trim().replace(/\/+$/, '')
 }
 
+// Genomic coordinates are always whole basepairs, so any "." or "," a user
+// types is a thousands separator - either convention, e.g. "2,500,000" or
+// "2.500.000" - never a decimal point. Strip both before parsing.
+function parseCoordinateInput(value: string): number {
+  return Number(value.replace(/[.,]/g, ''))
+}
+
 const LOCAL_GRAPH_ID_PREFIX = '__local_graph__:'
 
 function App({ worker }: AppProps) {
@@ -633,8 +640,8 @@ function App({ worker }: AppProps) {
     const selectedRegionPath = regionPaths[selectedRegionPathIndex]
     const reference = selectedRegionPath?.reference ?? manualRegionReference.trim()
     const sequence = selectedRegionPath?.sequence ?? manualRegionSequence.trim()
-    const start = Number(regionStart)
-    const end = Number(regionEnd)
+    const start = parseCoordinateInput(regionStart)
+    const end = parseCoordinateInput(regionEnd)
     const maxNodes = Number(regionMaxNodes)
 
     if (!selectedIndexedGraph || !selectedGraphSupportsExtraction) {
