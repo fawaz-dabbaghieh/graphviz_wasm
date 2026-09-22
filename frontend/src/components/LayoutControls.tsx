@@ -5,6 +5,7 @@ import type {
   GraphPath,
 } from '../types'
 import { pathHasRepeatedSegments } from '../utils/displayGraph'
+import { HelpIcon } from './HelpIcon'
 
 interface LayoutControlsProps {
   options: LayoutOptions
@@ -306,6 +307,14 @@ export function LayoutControls({
             <div className="control-group">
               <label>
                 <strong>Color Scheme:</strong>
+                <HelpIcon
+                  text={
+                    'Uniform: one color for every contig. ' +
+                    'Rainbow: a distinct color per contig. ' +
+                    'Color by Depth: color scaled by sequencing depth. ' +
+                    'Grey: greyscale, useful when relying on path colors instead.'
+                  }
+                />
               </label>
               <select
                 value={colorScheme}

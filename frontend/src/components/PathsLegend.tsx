@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import type { GraphPath } from '../types'
+import { HelpIcon } from './HelpIcon'
 
 interface PathsLegendProps {
   paths: GraphPath[]
@@ -213,7 +214,7 @@ export function PathsLegend({
           title={
             selectedPathNames.length === 0
               ? 'Select at least one path first'
-              : 'Hide nodes and edges not traversed by the selected paths'
+              : undefined
           }
           style={{
             display: 'flex',
@@ -234,6 +235,12 @@ export function PathsLegend({
             }
           />
           <span>Selected paths only</span>
+          <HelpIcon
+            text={
+              'When ticked, only nodes and edges traversed by the ' +
+              'selected paths stay on screen - everything else is removed.'
+            }
+          />
         </label>
         <span
           style={{

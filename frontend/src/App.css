@@ -686,6 +686,50 @@ body:has(.app.dark-mode) {
   color: #aaa;
 }
 
+/* Help icon: a small "(?)" badge with a hover/focus tooltip, used next to
+   options whose effect isn't already spelled out by a control-hint or
+   similarly obvious label. Fixed dark styling regardless of app theme, like
+   a standard OS tooltip, so it reads the same in light and dark mode. */
+.help-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: #777;
+  color: #fff;
+  font-size: 10px;
+  font-weight: bold;
+  line-height: 1;
+  cursor: help;
+  position: relative;
+  vertical-align: middle;
+}
+
+/* Positioned via inline top/left from the icon's live bounding rect (see
+   HelpIcon.tsx) and portaled to document.body, so it always escapes any
+   ancestor's overflow:hidden instead of being clipped by it. */
+.help-icon-tooltip {
+  position: fixed;
+  transform: translate(-50%, -100%);
+  background: #222;
+  color: #f0f0f0;
+  padding: 6px 9px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: normal;
+  line-height: 1.4;
+  text-align: left;
+  white-space: normal;
+  width: max-content;
+  max-width: 220px;
+  z-index: 1000;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  pointer-events: none;
+}
+
 .secondary-button {
   padding: 8px 12px;
   border: 1px solid #ccc;

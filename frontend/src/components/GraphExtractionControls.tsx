@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { GfaidxJobProgress } from '../api/gfaidx'
 import type { IndexedGraph, RegionPath } from '../types'
+import { HelpIcon } from './HelpIcon'
 
 type ExtractionMode = 'neighborhood' | 'region'
 
@@ -224,7 +225,16 @@ export function GraphExtractionControls({
               </div>
 
               <div className="control-group">
-                <label>Extract By</label>
+                <label>
+                  Extract By
+                  <HelpIcon
+                    text={
+                      'Node Neighborhood: grow outward from a chosen node ' +
+                      'by graph distance. Coordinate Region: pull nodes ' +
+                      "that fall within a genomic range on a reference."
+                    }
+                  />
+                </label>
                 <div
                   className="extraction-mode-options"
                   role="radiogroup"
@@ -269,7 +279,17 @@ export function GraphExtractionControls({
                 <>
                   <h4>Node Neighborhood</h4>
                   <div className="control-group">
-                    <label htmlFor="subgraph-start-node">Start Node ID</label>
+                    <label htmlFor="subgraph-start-node">
+                      Start Node ID
+                      <HelpIcon
+                        text={
+                          'The node to grow the neighborhood outward from, ' +
+                          'as shown on the graph (e.g. "1042"). Hover a ' +
+                          'node on the graph to find its ID, or right-click ' +
+                          'a node and choose "Use as Start Node."'
+                        }
+                      />
+                    </label>
                     <input
                       id="subgraph-start-node"
                       className="control-input"
@@ -378,6 +398,14 @@ export function GraphExtractionControls({
                   <div className="control-group">
                     <label htmlFor="region-path-search">
                       Search Coordinate Tracks
+                      <HelpIcon
+                        text={
+                          'A coordinate track is one haplotype whose ' +
+                          'genomic span is known, so you can pick a ' +
+                          'region on it below. Narrows the list by path, ' +
+                          'sample, or sequence name.'
+                        }
+                      />
                     </label>
                     <input
                       id="region-path-search"
@@ -475,7 +503,16 @@ export function GraphExtractionControls({
                   {useManualRegion && (
                     <>
                       <div className="control-group">
-                        <label htmlFor="manual-region-sequence">Sequence</label>
+                        <label htmlFor="manual-region-sequence">
+                          Sequence
+                          <HelpIcon
+                            text={
+                              'The chromosome or contig name to extract ' +
+                              'from, matching how it appears in the graph ' +
+                              '(e.g. "chr22").'
+                            }
+                          />
+                        </label>
                         <input
                           id="manual-region-sequence"
                           className="control-input"
@@ -492,6 +529,14 @@ export function GraphExtractionControls({
                       <div className="control-group">
                         <label htmlFor="manual-region-reference">
                           Reference Sample
+                          <HelpIcon
+                            text={
+                              'Which sample/haplotype defines the ' +
+                              'coordinate system for Sequence, when the ' +
+                              'graph has more than one. Leave blank if ' +
+                              "there's no ambiguity."
+                            }
+                          />
                         </label>
                         <input
                           id="manual-region-reference"
@@ -510,7 +555,16 @@ export function GraphExtractionControls({
 
                   <div className="control-row">
                     <div className="control-group">
-                      <label htmlFor="region-start">Start</label>
+                      <label htmlFor="region-start">
+                        Start
+                        <HelpIcon
+                          text={
+                            '0-based, inclusive - matches BED-style ' +
+                            'coordinates, not the 1-based numbering some ' +
+                            'genome browsers display.'
+                          }
+                        />
+                      </label>
                       <input
                         id="region-start"
                         className="control-input"
@@ -526,7 +580,10 @@ export function GraphExtractionControls({
                     </div>
 
                     <div className="control-group">
-                      <label htmlFor="region-end">End</label>
+                      <label htmlFor="region-end">
+                        End
+                        <HelpIcon text="0-based, exclusive - the base at this position itself is not included." />
+                      </label>
                       <input
                         id="region-end"
                         className="control-input"
