@@ -99,9 +99,19 @@ function App({ worker }: AppProps) {
   // The raw GFA text currentGraph was parsed from, kept only so "Download
   // GFA" can hand back exactly what was loaded rather than re-serializing
   // the parsed model (which could lose tags/fields it doesn't interpret).
+  // Only used for browser-uploaded/URL-loaded graphs, which have no backend
+  // job to re-fetch from; extraction results use currentGraphTicket instead.
   const [currentGraphGfaText, setCurrentGraphGfaText] = useState<
     string | null
   >(null)
+  // Ticket of the gfaidx job that produced currentGraph, when it came from a
+  // backend extraction. The result stays fetchable from the backend by this
+  // ticket, so "Download GFA" re-fetches it instead of holding a second copy
+  // of (potentially large) GFA text in memory for the whole session.
+  const [currentGraphTicket, setCurrentGraphTicket] = useState<string | null>(
+    null,
+  )
+  const [downloadingGfa, setDownloadingGfa] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [isDarkMode, setIsDarkMode] = useState(() => {
     const saved = localStorage.getItem('darkMode')
@@ -476,6 +486,7 @@ function App({ worker }: AppProps) {
       text: string,
       filename: string,
       source: 'browser' | 'backend-extraction' = 'browser',
+      ticket?: string,
     ) => {
       try {
         setLoadingFile(true)
@@ -498,7 +509,11 @@ function App({ worker }: AppProps) {
         }
 
         setCurrentGraph(graph)
-        setCurrentGraphGfaText(text)
+        // Extraction results are re-downloadable by ticket, so there's no
+        // need to also keep the text around; uploaded/URL text has no
+        // backend copy to fall back on, so that one is kept.
+        setCurrentGraphGfaText(ticket ? null : text)
+        setCurrentGraphTicket(ticket ?? null)
         setColorScheme('uniform')
         setDrawLabels(false)
         // Linear layout and path display both key off path names from the
@@ -523,16 +538,8 @@ function App({ worker }: AppProps) {
     [],
   )
 
-  const handleDownloadGfa = useCallback(() => {
-    if (!currentGraph || currentGraphGfaText === null) return
-
-    const filename = currentGraph.name.endsWith('.gfa')
-      ? currentGraph.name
-      : `${currentGraph.name}.gfa`
-
-    const blob = new Blob([currentGraphGfaText], {
-      type: 'text/plain;charset=utf-8',
-    })
+  const saveGfaTextAsFile = useCallback((text: string, filename: string) => {
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' })
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
@@ -541,7 +548,54 @@ function App({ worker }: AppProps) {
     link.click()
     document.body.removeChild(link)
     URL.revokeObjectURL(url)
-  }, [currentGraph, currentGraphGfaText])
+  }, [])
+
+  // Extraction results are re-fetched from the backend by ticket rather than
+  // re-serialized from a client-held copy - the backend's result endpoint
+  // serves the file inline (not as an attachment) and lives on a different
+  // origin than the GitHub Pages frontend, so the browser's `download`
+  // attribute can't apply to a direct link to it; fetching the bytes
+  // ourselves and handing them to a blob: link sidesteps both problems.
+  const handleDownloadGfa = useCallback(async () => {
+    if (!currentGraph) return
+
+    const filename = currentGraph.name.endsWith('.gfa')
+      ? currentGraph.name
+      : `${currentGraph.name}.gfa`
+
+    if (currentGraphTicket) {
+      try {
+        setDownloadingGfa(true)
+        const resultUrl = `${backendUrl}/api/result/gfaidx/${encodeURIComponent(
+          currentGraphTicket,
+        )}`
+        const response = await fetch(resultUrl)
+        if (!response.ok) {
+          throw new Error(await readBackendError(response))
+        }
+        saveGfaTextAsFile(await response.text(), filename)
+      } catch (error) {
+        setLoadError(
+          error instanceof Error
+            ? error.message
+            : 'Failed to download GFA from the backend',
+        )
+      } finally {
+        setDownloadingGfa(false)
+      }
+      return
+    }
+
+    if (currentGraphGfaText !== null) {
+      saveGfaTextAsFile(currentGraphGfaText, filename)
+    }
+  }, [
+    backendUrl,
+    currentGraph,
+    currentGraphGfaText,
+    currentGraphTicket,
+    saveGfaTextAsFile,
+  ])
 
   // Stop polling when this visualizer is unmounted. Clearing the ref first
   // also prevents the in-flight request from updating an unmounted component.
@@ -631,7 +685,7 @@ function App({ worker }: AppProps) {
     try {
       setLoadError(null)
 
-      const { gfaText } = await runBackendExtraction(
+      const { gfaText, ticket } = await runBackendExtraction(
         '/api/ticket/gfaidx/subgraph',
         {
           graph_id: selectedIndexedGraph,
@@ -645,6 +699,7 @@ function App({ worker }: AppProps) {
         gfaText,
         `${selectedIndexedGraph}_${startNode}_${maxNodes}_nodes${coordinateSuffix}.gfa`,
         'backend-extraction',
+        ticket,
       )
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') return
@@ -710,7 +765,7 @@ function App({ worker }: AppProps) {
     try {
       setLoadError(null)
 
-      const { gfaText } = await runBackendExtraction(
+      const { gfaText, ticket } = await runBackendExtraction(
         '/api/ticket/gfaidx/region',
         {
           graph_id: selectedIndexedGraph,
@@ -732,6 +787,7 @@ function App({ worker }: AppProps) {
         gfaText,
         `${selectedIndexedGraph}_${referencePrefix}${sequence}_${start}_${end}${modeSuffix}${coordinateSuffix}.gfa`,
         'backend-extraction',
+        ticket,
       )
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') return
@@ -1129,9 +1185,16 @@ function App({ worker }: AppProps) {
                       handleDownloadGfa()
                       setFileMenuOpen(false)
                     }}
-                    disabled={!currentGraph || currentGraphGfaText === null}
+                    disabled={
+                      !currentGraph ||
+                      (currentGraphGfaText === null &&
+                        currentGraphTicket === null) ||
+                      downloadingGfa
+                    }
                   >
-                    <div className="dropdown-item-title">Download GFA</div>
+                    <div className="dropdown-item-title">
+                      {downloadingGfa ? 'Downloading...' : 'Download GFA'}
+                    </div>
                     <div className="dropdown-item-desc">
                       Save the currently loaded graph to a .gfa file
                     </div>
