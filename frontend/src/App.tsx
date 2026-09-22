@@ -96,6 +96,12 @@ function App({ worker }: AppProps) {
   const [loadingFile, setLoadingFile] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [currentGraph, setCurrentGraph] = useState<Graph | null>(null)
+  // The raw GFA text currentGraph was parsed from, kept only so "Download
+  // GFA" can hand back exactly what was loaded rather than re-serializing
+  // the parsed model (which could lose tags/fields it doesn't interpret).
+  const [currentGraphGfaText, setCurrentGraphGfaText] = useState<
+    string | null
+  >(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [isDarkMode, setIsDarkMode] = useState(() => {
     const saved = localStorage.getItem('darkMode')
@@ -492,6 +498,7 @@ function App({ worker }: AppProps) {
         }
 
         setCurrentGraph(graph)
+        setCurrentGraphGfaText(text)
         setColorScheme('uniform')
         setDrawLabels(false)
         // Linear layout and path display both key off path names from the
@@ -515,6 +522,26 @@ function App({ worker }: AppProps) {
     },
     [],
   )
+
+  const handleDownloadGfa = useCallback(() => {
+    if (!currentGraph || currentGraphGfaText === null) return
+
+    const filename = currentGraph.name.endsWith('.gfa')
+      ? currentGraph.name
+      : `${currentGraph.name}.gfa`
+
+    const blob = new Blob([currentGraphGfaText], {
+      type: 'text/plain;charset=utf-8',
+    })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = filename
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+  }, [currentGraph, currentGraphGfaText])
 
   // Stop polling when this visualizer is unmounted. Clearing the ref first
   // also prevents the in-flight request from updating an unmounted component.
@@ -1096,6 +1123,19 @@ function App({ worker }: AppProps) {
                       </div>
                     )}
                   </div>
+                  <button
+                    className="dropdown-item"
+                    onClick={() => {
+                      handleDownloadGfa()
+                      setFileMenuOpen(false)
+                    }}
+                    disabled={!currentGraph || currentGraphGfaText === null}
+                  >
+                    <div className="dropdown-item-title">Download GFA</div>
+                    <div className="dropdown-item-desc">
+                      Save the currently loaded graph to a .gfa file
+                    </div>
+                  </button>
                 </div>
               )}
             </div>
