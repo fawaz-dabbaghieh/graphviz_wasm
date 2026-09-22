@@ -57,26 +57,6 @@ function worldXToBp(
   return last.bp
 }
 
-function bpToWorldX(
-  breakpoints: PathCoordinateBreakpoint[],
-  bp: number,
-): number | null {
-  const first = breakpoints[0]!
-  const last = breakpoints[breakpoints.length - 1]!
-  if (bp < first.bp || bp > last.bp) return null
-
-  for (let i = 0; i + 1 < breakpoints.length; i++) {
-    const a = breakpoints[i]!
-    const b = breakpoints[i + 1]!
-    if (bp >= a.bp && bp <= b.bp) {
-      if (b.bp === a.bp) return a.worldX
-      const t = (bp - a.bp) / (b.bp - a.bp)
-      return a.worldX + t * (b.worldX - a.worldX)
-    }
-  }
-  return last.worldX
-}
-
 // "Nice numbers" axis ticking (Heckbert): picks a human-friendly step (1, 2,
 // or 5 times a power of ten) so tick density stays readable at any zoom
 // level instead of e.g. landing on every 137 bp.
@@ -97,26 +77,6 @@ function niceNumber(value: number, round: boolean): number {
     else niceFraction = 10
   }
   return niceFraction * Math.pow(10, exponent)
-}
-
-function computeNiceTicks(
-  min: number,
-  max: number,
-  desiredCount: number,
-): number[] {
-  if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) return []
-
-  const range = niceNumber(max - min, false)
-  // bp positions are discrete, so the step can never usefully drop below 1.
-  const step = Math.max(1, niceNumber(range / Math.max(1, desiredCount - 1), true))
-  const niceMin = Math.floor(min / step) * step
-  const niceMax = Math.ceil(max / step) * step
-
-  const ticks: number[] = []
-  for (let value = niceMin; value <= niceMax + step * 0.5; value += step) {
-    if (value >= min - step && value <= max + step) ticks.push(Math.round(value))
-  }
-  return ticks
 }
 
 function formatCoordinateLabel(bp: number, sequenceName: string | null): string {
@@ -1475,16 +1435,20 @@ function GraphCanvasComponent({
       visibleMaxX = Math.min(visibleMaxX, maxWorldX)
 
       if (visibleMinX < visibleMaxX) {
-        const visibleMinBp = worldXToBp(breakpoints, visibleMinX)
-        const visibleMaxBp = worldXToBp(breakpoints, visibleMaxX)
         const desiredTickCount = Math.max(2, Math.floor(width / 150))
-        const tickValues = computeNiceTicks(
-          visibleMinBp,
-          visibleMaxBp,
-          desiredTickCount,
-        )
 
-        const rulerY = height - 28
+        // Node lengths below the minimum drawn length are clamped, so bp per
+        // world-x pixel isn't uniform along the path: a run of short nodes
+        // is visually stretched relative to its real length, a run of long
+        // ones compressed. Ticks are placed at fixed, evenly-spaced world-x
+        // positions (never moved afterward) so they can never bunch up or
+        // leave gaps regardless of that distortion. Each tick's *label* is
+        // still rounded to a nice-looking number, but the rounding step is
+        // chosen locally (from how much bp changes between this tick and its
+        // neighbor) rather than one global step - a global step could still
+        // be far coarser than a stretched region's whole bp span, collapsing
+        // several evenly-spaced ticks onto the same displayed number.
+        const rulerY = height - 55
         const tickLength = 6
         const clipMargin = 24
 
@@ -1498,8 +1462,6 @@ function GraphCanvasComponent({
         ctx.strokeStyle = isDarkMode ? '#888' : '#555'
         ctx.fillStyle = isDarkMode ? '#ccc' : '#333'
         ctx.font = '10px monospace'
-        ctx.textAlign = 'center'
-        ctx.textBaseline = 'top'
         ctx.lineWidth = 1
 
         const baselineStartX = transformPoint(minWorldX, 0).x
@@ -1509,25 +1471,58 @@ function GraphCanvasComponent({
         ctx.lineTo(baselineEndX, rulerY)
         ctx.stroke()
 
-        for (const bp of tickValues) {
-          const worldX = bpToWorldX(breakpoints, bp)
-          if (worldX === null) continue
+        const worldStep = (visibleMaxX - visibleMinX) / desiredTickCount
+        const sampleBps: number[] = []
+        for (let i = 0; i <= desiredTickCount; i++) {
+          sampleBps.push(worldXToBp(breakpoints, visibleMinX + i * worldStep))
+        }
 
+        let lastLabel: string | null = null
+
+        for (let i = 0; i < sampleBps.length; i++) {
+          const worldX = visibleMinX + i * worldStep
           const screenX = transformPoint(worldX, 0).x
-          if (screenX < -clipMargin || screenX > width + clipMargin) {
-            continue
+          if (screenX < -clipMargin || screenX > width + clipMargin) continue
+
+          // The smaller of the two neighboring gaps, not just the next one:
+          // at a density transition (e.g. a stretched region followed by a
+          // compressed one), sizing the step from whichever side is finer
+          // avoids rounding so coarsely that a tick's label ends up lower
+          // than the previous tick's, even though position-wise it's later
+          // along the path.
+          const neighborDeltas: number[] = []
+          if (i > 0) neighborDeltas.push(Math.abs(sampleBps[i]! - sampleBps[i - 1]!))
+          if (i + 1 < sampleBps.length) {
+            neighborDeltas.push(Math.abs(sampleBps[i + 1]! - sampleBps[i]!))
           }
+          const localDelta = Math.max(
+            1,
+            neighborDeltas.length > 0 ? Math.min(...neighborDeltas) : 1,
+          )
+          const localStep = Math.max(1, niceNumber(localDelta, true))
+          const roundedBp = Math.round(sampleBps[i]! / localStep) * localStep
 
           ctx.beginPath()
           ctx.moveTo(screenX, rulerY)
           ctx.lineTo(screenX, rulerY + tickLength)
           ctx.stroke()
 
-          ctx.fillText(
-            formatCoordinateLabel(bp, sequenceName),
-            screenX,
-            rulerY + tickLength + 2,
-          )
+          // A tick still gets drawn even when its rounded value repeats the
+          // previous tick's (possible in a very stretched region), but the
+          // label is skipped rather than printing the same text twice.
+          const label = formatCoordinateLabel(roundedBp, sequenceName)
+          if (label !== lastLabel) {
+            // Angled so labels for closely-spaced ticks overlap far less
+            // than upright text would.
+            ctx.save()
+            ctx.translate(screenX, rulerY + tickLength + 4)
+            ctx.rotate(-Math.PI / 4)
+            ctx.textAlign = 'right'
+            ctx.textBaseline = 'middle'
+            ctx.fillText(label, 0, 0)
+            ctx.restore()
+            lastLabel = label
+          }
         }
 
         ctx.restore()
