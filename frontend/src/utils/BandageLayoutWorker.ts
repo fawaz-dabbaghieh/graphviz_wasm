@@ -25,6 +25,64 @@ interface WorkerMessage {
   }
 }
 
+// What the WASM layout engine actually reads off the graph it's given
+// (bindings.cpp): a node's id/length, an edge's from/to/overlap, and - only
+// in linear-layout mode - the one reference path's name/nodeIds. Everything
+// else on the full app-side Graph (sequences, tags, depth, every other path,
+// and every edge's full list of which paths traverse it) is display-only
+// data the renderer needs, never the layout engine.
+interface MinimalLayoutNode {
+  id: string
+  length: number
+}
+
+interface MinimalLayoutEdge {
+  from: string
+  to: string
+  overlap: number
+}
+
+interface MinimalLayoutPath {
+  name: string
+  nodeIds: string[]
+}
+
+interface MinimalLayoutGraph {
+  nodes: MinimalLayoutNode[]
+  edges: MinimalLayoutEdge[]
+  paths: MinimalLayoutPath[]
+}
+
+// postMessage structured-clones whatever it's handed, so sending the full
+// Graph here was cloning every haplotype path's complete node list plus
+// every edge's full pathIds list into the worker on every single layout
+// call - for a graph with hundreds of paths that's tens of millions of
+// string entries with nothing to do with laying the graph out, and was
+// measured to be the dominant cause of multi-gigabyte memory spikes on
+// large pangenome graphs (dwarfing the actual node/edge topology). Only the
+// single active reference path (if any) is included, never the rest.
+function toMinimalLayoutGraph(
+  graph: Graph,
+  options: LayoutOptions,
+): MinimalLayoutGraph {
+  const referencePath =
+    options.linearLayout && options.referencePathName
+      ? graph.paths?.find(path => path.name === options.referencePathName)
+      : undefined
+
+  return {
+    nodes: graph.nodes.map(node => ({ id: node.id, length: node.length })),
+    edges: graph.edges.map(edge => ({
+      from: edge.from,
+      to: edge.to,
+      overlap: edge.overlap,
+    })),
+    paths: referencePath
+      ? [{ name: referencePath.name, nodeIds: referencePath.nodeIds }]
+      : [],
+  }
+}
+
 export class BandageLayoutWorker {
   // This class adapts the low-level worker messaging protocol into a small
   // Promise-based API that the React components can await directly.
@@ -127,13 +185,15 @@ export class BandageLayoutWorker {
     const id = this._messageId++
     const startTime = performance.now()
 
+    const minimalGraph = toMinimalLayoutGraph(graph, options)
+
     return new Promise<LayoutResult>((resolve, reject) => {
       this._pending.set(id, { resolve, reject })
 
       this._worker!.postMessage({
         type: 'compute-layout',
         id,
-        data: { graph, options },
+        data: { graph: minimalGraph, options },
       })
     }).then(result => {
       const duration = performance.now() - startTime

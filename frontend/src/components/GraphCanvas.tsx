@@ -276,10 +276,12 @@ function GraphCanvasComponent({
       breakpoints,
     }
   }, [graph, activeNodePositions, linearLayout, referencePathName])
-  const displayGraphTopology = useMemo(
-    () => buildDisplayGraph(graph, layoutResult.nodePositions),
-    [graph, layoutResult.nodePositions],
-  )
+  // Topology (including the expensive per-path traversal walk) only depends
+  // on the graph itself, never on a specific layout's node positions - see
+  // buildDisplayGraph's own comment. Positions are layered on separately
+  // below via updateDisplayGraphNodePositions, so this memo now only
+  // recomputes when a new graph is loaded instead of on every redraw.
+  const displayGraphTopology = useMemo(() => buildDisplayGraph(graph), [graph])
   const visibleDisplayGraphTopology = useMemo(() => {
     if (!filterToSelectedPaths || !visiblePathIds) {
       return displayGraphTopology
@@ -349,6 +351,15 @@ function GraphCanvasComponent({
     height: number
     dpr: number
   } | null>(null)
+  // Always holds the most recently created draw() closure, so the rAF
+  // callback below can call the version with up-to-date transform/hover/etc.
+  // state even if it was scheduled by an earlier, now-stale render.
+  const drawRef = useRef<(() => void) | null>(null)
+  // Tracks whether a repaint is already queued for the next animation frame,
+  // so several redraw requests landing in the same frame (e.g. a burst of
+  // mousemove events while panning, each updating transform state) collapse
+  // into a single canvas repaint instead of one full repaint per event.
+  const pendingDrawFrameRef = useRef<number | null>(null)
 
   const reportInternalZoom = useCallback(
     (nextZoom: number) => {
@@ -998,6 +1009,52 @@ function GraphCanvasComponent({
       }
     }
 
+    // Viewport culling: everything below skips both the per-point coordinate
+    // transforms and the ctx path/stroke calls for nodes and edges that have
+    // no chance of touching the visible canvas rectangle. This is what keeps
+    // pan/zoom responsive on graphs with tens of thousands of nodes - once
+    // zoomed into a handful of them, draw() cost scales with what's on
+    // screen instead of with the size of the whole graph.
+    //
+    // The four inverse-transformed canvas corners bound the visible world-
+    // space region. Under rotation this axis-aligned box is a slight over-
+    // estimate of the (rotated) visible area - the same accepted trade-off
+    // already used below for the reference-path ruler - so a few extra
+    // off-screen items may still get drawn near a rotated view's corners,
+    // but nothing visible is ever skipped.
+    const viewportCorners = [
+      screenToWorld(0, 0),
+      screenToWorld(width, 0),
+      screenToWorld(width, height),
+      screenToWorld(0, height),
+    ]
+    let viewMinX = Infinity
+    let viewMaxX = -Infinity
+    let viewMinY = Infinity
+    let viewMaxY = -Infinity
+    for (const corner of viewportCorners) {
+      viewMinX = Math.min(viewMinX, corner.x)
+      viewMaxX = Math.max(viewMaxX, corner.x)
+      viewMinY = Math.min(viewMinY, corner.y)
+      viewMaxY = Math.max(viewMaxY, corner.y)
+    }
+    // A fixed-screen-pixel margin (converted to world units, so it stays a
+    // constant number of pixels regardless of zoom) absorbs everything that
+    // can make something visible slightly outside its own bounding box:
+    // stroke width, a node label drawn above its contig, and the self-loop /
+    // reverse-complement-loop curves' fixed-screen-size extensions.
+    const cullMarginWorld = 100 / scale
+    const isBoundsVisible = (bounds: {
+      minX: number
+      maxX: number
+      minY: number
+      maxY: number
+    }) =>
+      bounds.maxX >= viewMinX - cullMarginWorld &&
+      bounds.minX <= viewMaxX + cullMarginWorld &&
+      bounds.maxY >= viewMinY - cullMarginWorld &&
+      bounds.minY <= viewMaxY + cullMarginWorld
+
     // Helper function to draw an arrowhead at a point
     const drawArrowhead = (
       ctx: CanvasRenderingContext2D,
@@ -1188,9 +1245,74 @@ function GraphCanvasComponent({
       }
     }
 
+    // A cubic Bezier curve always lies within the convex hull of its control
+    // points, so the bounding box of those points is a safe (if slightly
+    // generous) box for the whole curve - cheap to compute for every edge
+    // every frame since it's just a handful of min/max comparisons over
+    // points buildEdgeGeometry already produced.
+    const edgeGeometryBounds = (
+      geometry: NonNullable<ReturnType<typeof buildEdgeGeometry>>,
+    ) => {
+      const points =
+        geometry.kind === 'self-loop'
+          ? [
+              geometry.start,
+              geometry.end,
+              geometry.controlPoint1,
+              geometry.controlPoint2,
+              geometry.cp1Shifted,
+              geometry.nodeMidShifted,
+              geometry.cp2Shifted,
+            ]
+          : geometry.kind === 'reverse-complement-loop'
+            ? [
+                geometry.start,
+                geometry.end,
+                geometry.controlPoint1,
+                geometry.controlPoint2,
+                geometry.pathMidPoint,
+                geometry.pathMidShifted,
+                geometry.pathMidShiftedOpposite,
+              ]
+            : [
+                geometry.start,
+                geometry.end,
+                geometry.controlPoint1,
+                geometry.controlPoint2,
+              ]
+
+      let minX = Infinity
+      let maxX = -Infinity
+      let minY = Infinity
+      let maxY = -Infinity
+      for (const point of points) {
+        minX = Math.min(minX, point.x)
+        maxX = Math.max(maxX, point.x)
+        minY = Math.min(minY, point.y)
+        maxY = Math.max(maxY, point.y)
+      }
+      return { minX, maxX, minY, maxY }
+    }
+
     // Draw single-mode base edges and then directional path overlays on top of
     // the same canonical geometry.
     displayGraph.edges.forEach((displayEdge, edgeIdx) => {
+      // Cull using the offset-free base geometry rather than re-checking each
+      // path-overlay traversal separately: the per-traversal offset (a few
+      // world-space units) can never be enough on its own to move a curve
+      // in or out of a viewport whose margin is already ~100 screen pixels,
+      // so one bounds check here safely stands in for all of an edge's
+      // traversal variants and its no-path fallback alike.
+      const cullGeometry = buildEdgeGeometry(
+        displayEdge.representativeEdge,
+        0,
+        0,
+        scale,
+      )
+      if (!cullGeometry || !isBoundsVisible(edgeGeometryBounds(cullGeometry))) {
+        return
+      }
+
       const isHovered = hoveredEdge === edgeIdx
       const visiblePathTraversals = getVisiblePathTraversals(
         displayEdge.pathTraversals,
@@ -1353,6 +1475,14 @@ function GraphCanvasComponent({
     displayGraph.nodes.forEach(displayNode => {
       const { representativeId, node, segments } = displayNode
       if (segments.length === 0) return
+
+      // Skip nodes entirely outside the current view - both their canvas
+      // path construction and (if enabled) their label text, which is the
+      // bulk of what this loop spends time on for graphs with tens of
+      // thousands of nodes. The bounds map is already built for hover hit-
+      // testing, so this reuses it rather than computing anything new.
+      const bounds = nodeBoundsByKey.get(displayNode.key)
+      if (bounds && !isBoundsVisible(bounds)) return
 
       // Get color based on selected scheme
       const color = getNodeColor(node)
@@ -1540,6 +1670,7 @@ function GraphCanvasComponent({
     isDarkMode,
     getNodeColor,
     displayGraph,
+    nodeBoundsByKey,
     pathColors,
     getVisiblePathTraversals,
     buildEdgeGeometry,
@@ -1554,10 +1685,35 @@ function GraphCanvasComponent({
     referencePathCoordinates,
   ])
 
-  // Redraw when any state changes
+  // Keep the latest draw() closure available to the rAF callback below,
+  // regardless of whether that callback was queued by this render or an
+  // earlier one.
+  drawRef.current = draw
+
+  // Redraw when any state changes, coalesced to at most one repaint per
+  // animation frame. Without this, dragging to pan fires a full graph
+  // repaint on every single mousemove event - often several per frame on a
+  // fast mouse - which is what made panning feel laggy on large graphs even
+  // after viewport culling cut the cost of each individual repaint.
   useEffect(() => {
-    draw()
+    if (pendingDrawFrameRef.current !== null) return
+
+    pendingDrawFrameRef.current = window.requestAnimationFrame(() => {
+      pendingDrawFrameRef.current = null
+      drawRef.current?.()
+    })
   }, [draw])
+
+  // Cancel any repaint still queued when the component unmounts.
+  useEffect(
+    () => () => {
+      if (pendingDrawFrameRef.current !== null) {
+        window.cancelAnimationFrame(pendingDrawFrameRef.current)
+        pendingDrawFrameRef.current = null
+      }
+    },
+    [],
+  )
 
   // Add wheel event listener with passive: false to prevent page scroll
   useEffect(() => {

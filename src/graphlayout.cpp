@@ -505,10 +505,28 @@ static void runReferencePathRelax(
         // to their real target is kept. With a single anchor the translation
         // is always exact, so this can only matter - and never hurts - when
         // a branch reconnects to the path at more than one point.
+        //
+        // Both of those independence conditions get capped below, because a
+        // sparsely-covering reference path (e.g. a haplotype whose assembled
+        // contig only spans a sliver of the drawn region) leaves nearly the
+        // entire rest of the graph as a single enormous "branch". Running a
+        // full organic FMMM pass on tens of thousands of nodes four or eight
+        // times over (once per round) turned out to take 6-10x longer than a
+        // well-covering reference path in testing, for a benefit
+        // (picking the least-tense of a few random attempts) that matters
+        // far less on a large, internally-constrained branch than it does on
+        // a tiny few-node bubble.
+        const int kSingleAnchorRounds = 1;
+        const size_t kLargeBranchNodeThreshold = 500;
+        const int effectiveRounds =
+            anchors.size() <= 1
+                ? kSingleAnchorRounds
+                : (members.size() > kLargeBranchNodeThreshold ? 1 : relaxRounds);
+
         std::unordered_map<ogdf::node, std::pair<double, double>> bestPositions;
         double bestTension = std::numeric_limits<double>::infinity();
 
-        for (int attempt = 0; attempt < relaxRounds; ++attempt) {
+        for (int attempt = 0; attempt < effectiveRounds; ++attempt) {
             FMMGraphLayout initialLayout(graphLayoutQuality, /*useLinearLayout=*/false,
                                         componentSeparation, aspectRatio);
             initialLayout.run(branchGA, branchEdgeLengths);

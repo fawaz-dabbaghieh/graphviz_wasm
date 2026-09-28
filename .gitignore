@@ -7,7 +7,7 @@ yarn-error.log*
 lerna-debug.log*
 
 gfaidx
-
+CLAUDE.local.md
 # Python backend caches
 __pycache__/
 *.py[cod]

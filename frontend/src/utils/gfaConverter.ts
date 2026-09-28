@@ -171,6 +171,18 @@ export function convertGFAToGraph(
     }
   }
 
+  // Every path traversal re-mints a node id string for each node it passes
+  // through (hundreds of haplotype paths commonly share most of the same
+  // backbone nodes), which without interning meant, for a real 470-haplotype
+  // pangenome graph, ~15 million separate string objects for what are really
+  // only ~85,000 distinct ids - measured to add several hundred MB on its
+  // own. Interning against the canonical id already sitting on each node
+  // means every edge endpoint and path entry reuses that same string
+  // instance instead of allocating a new one.
+  const nodeIdIntern = new Map<string, string>()
+  for (const node of nodes) nodeIdIntern.set(node.id, node.id)
+  const internNodeId = (id: string): string => nodeIdIntern.get(id) ?? id
+
   // Convert links to edges
   for (const link of gfaGraph.links) {
     const overlap = parseCigarOverlap(link.cigar)
@@ -180,8 +192,8 @@ export function convertGFAToGraph(
     const targetStrand = link.strand2 || '+'
 
     // Create edge with proper strand notation
-    const from = `${link.source}${sourceStrand}`
-    const to = `${link.target}${targetStrand}`
+    const from = internNodeId(`${link.source}${sourceStrand}`)
+    const to = internNodeId(`${link.target}${targetStrand}`)
 
     edges.push({
       from,
@@ -192,22 +204,6 @@ export function convertGFAToGraph(
 
   // Process paths
   const paths: GraphPath[] = []
-  // Track which rendered edge belongs to which named paths so the canvas can
-  // overlay and filter path-specific connectors later.
-  const edgeToPathsMap = new Map<string, Set<string>>()
-
-  const markPathEdges = (nodeIds: string[], pathName: string) => {
-    for (let i = 0; i < nodeIds.length - 1; i++) {
-      const from = nodeIds[i]!
-      const to = nodeIds[i + 1]!
-      const edgeKey = `${from}->${to}`
-
-      if (!edgeToPathsMap.has(edgeKey)) {
-        edgeToPathsMap.set(edgeKey, new Set())
-      }
-      edgeToPathsMap.get(edgeKey)!.add(pathName)
-    }
-  }
 
   for (const gfaPath of gfaGraph.paths) {
     // Parse path string (format: node1+,node2-,node3+,...)
@@ -217,7 +213,7 @@ export function convertGFAToGraph(
     for (const segment of pathSegments) {
       const strand = segment.slice(-1) // Last character is the strand
       const nodeName = segment.slice(0, -1) // Everything except last character
-      nodeIds.push(`${nodeName}${strand}`)
+      nodeIds.push(internNodeId(`${nodeName}${strand}`))
     }
 
     paths.push({
@@ -226,8 +222,6 @@ export function convertGFAToGraph(
       recordType: gfaPath.recordType,
       walk: gfaPath.walk,
     })
-
-    markPathEdges(nodeIds, gfaPath.name)
   }
 
   // minigraph-style rGFA graphs have no P/W lines at all; synthesize the
@@ -238,20 +232,8 @@ export function convertGFAToGraph(
     gfaGraph.nodes,
     existingNodeIds,
   )) {
+    rgfaPath.nodeIds = rgfaPath.nodeIds.map(internNodeId)
     paths.push(rgfaPath)
-    markPathEdges(rgfaPath.nodeIds, rgfaPath.name)
-  }
-
-  // Add path information to edges
-  for (const edge of edges) {
-    // The graph model stays edge-centric: each edge stores the path ids that
-    // traverse it so rendering can stay local while the full path list remains
-    // available for legends and selection UI.
-    const edgeKey = `${edge.from}->${edge.to}`
-    const pathIds = edgeToPathsMap.get(edgeKey)
-    if (pathIds && pathIds.size > 0) {
-      edge.pathIds = Array.from(pathIds)
-    }
   }
 
   return {

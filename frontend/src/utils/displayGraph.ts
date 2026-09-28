@@ -69,18 +69,12 @@ export function reverseSegments(segments: NodeSegment[]): NodeSegment[] {
   return [...segments].reverse().map(segment => ({ ...segment }))
 }
 
-function chooseRepresentativeNodeId(
-  nodeIds: string[],
-  nodePositions: Record<string, NodeSegment[]>,
-): string {
-  const idsWithPositions = nodeIds.filter(nodeId => nodePositions[nodeId]?.length)
-  const preferredIds = idsWithPositions.length > 0 ? idsWithPositions : nodeIds
-
+function chooseRepresentativeNodeId(nodeIds: string[]): string {
   // Single-mode Bandage prefers positive nodes when they exist, but still
   // falls back to the only available orientation for one-sided graphs.
   return (
-    preferredIds.find(nodeId => nodeId.endsWith('+')) ??
-    [...preferredIds].sort()[0] ??
+    nodeIds.find(nodeId => nodeId.endsWith('+')) ??
+    [...nodeIds].sort()[0] ??
     nodeIds[0]!
   )
 }
@@ -107,10 +101,15 @@ function chooseRepresentativeEdge(
   )
 }
 
-export function buildDisplayGraph(
-  graph: Graph,
-  nodePositions: Record<string, NodeSegment[]>,
-): DisplayGraph {
+// Deliberately takes only the graph, not node positions: grouping nodes and
+// walking every path to build pathTraversals (the expensive part - tens of
+// millions of entries on a large multi-haplotype pangenome graph) depends
+// only on topology, never on where anything is drawn. Segments start empty
+// and are always filled in afterward by updateDisplayGraphNodePositions, so
+// coupling this to a specific layout result would only force the whole
+// traversal walk to redo itself on every redraw for no benefit - which is
+// exactly what used to happen when nodePositions was a dependency here.
+export function buildDisplayGraph(graph: Graph): DisplayGraph {
   const nodeGroups = new Map<string, GraphNode[]>()
   for (const node of graph.nodes) {
     const key = stripNodeOrientation(node.id)
@@ -123,7 +122,6 @@ export function buildDisplayGraph(
   const nodes = Array.from(nodeGroups.entries(), ([key, groupedNodes]) => {
     const representativeId = chooseRepresentativeNodeId(
       groupedNodes.map(node => node.id),
-      nodePositions,
     )
     const representativeNode =
       groupedNodes.find(node => node.id === representativeId) ?? groupedNodes[0]!
@@ -133,7 +131,7 @@ export function buildDisplayGraph(
       representativeId,
       node: representativeNode,
       nodeIds: groupedNodes.map(node => node.id),
-      segments: nodePositions[representativeId] ?? [],
+      segments: [] as NodeSegment[],
     }
   })
 

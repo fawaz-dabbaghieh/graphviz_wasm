@@ -120,7 +120,12 @@ AssemblyGraph* createGraphFromJS(const val& jsGraph) {
         val node = jsNodes[i];
         std::string id = node["id"].as<std::string>();
         unsigned nodeLength = node["length"].as<unsigned>();
-        float depth = node["depth"].as<float>();
+        // Depth (read coverage) is meaningless for graphs that aren't
+        // assemblies - e.g. pangenome graphs - and isn't used by the layout
+        // algorithm itself, so it's optional here and defaults to a neutral
+        // value rather than being a required part of every node payload.
+        float depth = node.hasOwnProperty("depth") ?
+            node["depth"].as<float>() : 1.0f;
 
         auto* n = graph->addNode(id, nodeLength, depth);
         n->setAsDrawn(); // Assume all input nodes should be drawn

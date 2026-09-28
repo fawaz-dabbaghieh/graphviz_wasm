@@ -138,7 +138,7 @@ export function getGraphStats(graph: Graph): GraphStats {
   const uniqueNodes = getDisplayNodes(graph)
   const lengths = uniqueNodes.map(n => n.length).sort((a, b) => a - b)
   const depths = uniqueNodes.map(n => n.depth)
-  const displayGraph = buildDisplayGraph(graph, {})
+  const displayGraph = buildDisplayGraph(graph)
 
   const totalLength = lengths.reduce((sum, l) => sum + l, 0)
   const minLength = lengths[0]!

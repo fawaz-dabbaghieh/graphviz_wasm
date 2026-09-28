@@ -18,7 +18,6 @@ export interface GraphEdge {
   from: string
   to: string
   overlap: number
-  pathIds?: string[] // Optional: which paths use this edge
 }
 
 export interface GraphPath {
