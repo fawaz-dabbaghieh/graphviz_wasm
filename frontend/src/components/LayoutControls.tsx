@@ -28,6 +28,12 @@ interface LayoutControlsProps {
   onDrawPathsChange: (draw: boolean) => void
   hasPathsInGraph: boolean
   paths: GraphPath[]
+  // Set when a coordinate-region query's own path couldn't become the
+  // linear layout backbone (it repeats a segment), so the user sees why they
+  // got the normal layout instead of what they asked for.
+  fallbackWarning: string | null
+  hasLayoutResult: boolean
+  isLargeGraph: boolean
 }
 
 export function LayoutControls({
@@ -49,10 +55,14 @@ export function LayoutControls({
   onDrawPathsChange,
   hasPathsInGraph,
   paths,
+  fallbackWarning,
+  hasLayoutResult,
+  isLargeGraph,
 }: LayoutControlsProps) {
   // The zoom slider is temporarily hidden (broken sync with canvas wheel-zoom);
   // `zoom`/`onZoomChange` stay in the prop contract for when it's re-enabled.
   const [otherSettingsExpanded, setOtherSettingsExpanded] = useState(false)
+  const [referencePathQuery, setReferencePathQuery] = useState('')
   const repeatedReferencePathNames = useMemo(() => {
     const repeatedPaths = new Set<string>()
 
@@ -63,11 +73,25 @@ export function LayoutControls({
 
     return repeatedPaths
   }, [paths])
+  // A pangenome graph can have hundreds of haplotype paths, at which point
+  // scrolling a plain <select> to find one by eye stops being practical.
+  const filteredReferencePaths = useMemo(() => {
+    const query = referencePathQuery.trim().toLocaleLowerCase()
+    if (!query) return paths
+    return paths.filter(path => path.name.toLocaleLowerCase().includes(query))
+  }, [paths, referencePathQuery])
+  const selectedReferencePathIsVisible =
+    options.referencePathName === '' ||
+    filteredReferencePaths.some(path => path.name === options.referencePathName)
 
   return (
     <div className="layout-controls">
       <div className="display-section">
         <h4>Display</h4>
+
+        {fallbackWarning && (
+          <div className="control-warning">{fallbackWarning}</div>
+        )}
 
         <div className="control-group">
           <label>
@@ -88,51 +112,95 @@ export function LayoutControls({
         </div>
 
         {options.linearLayout && hasPathsInGraph && (
-          <div className="control-group">
-            <label htmlFor="reference-path-select">
-              <strong>Reference Path:</strong>
-            </label>
-            <select
-              id="reference-path-select"
-              className="control-select"
-              value={options.referencePathName}
-              onChange={event =>
-                onChange({
-                  ...options,
-                  referencePathName: event.currentTarget.value,
-                })
-              }
-              disabled={isComputing}
-            >
-              <option value="">Node ID order</option>
-              {paths.map(path => {
-                const hasRepeatedSegments =
-                  repeatedReferencePathNames.has(path.name)
-                return (
-                  <option
-                    key={path.name}
-                    value={path.name}
-                    disabled={hasRepeatedSegments}
-                  >
-                    {path.name}
-                    {hasRepeatedSegments
-                      ? ' (repeated segments - unavailable)'
-                      : ''}
-                  </option>
-                )
-              })}
-            </select>
-            <div className="control-hint">
-              Keep the selected path horizontal in traversal order.
-            </div>
-            {repeatedReferencePathNames.size > 0 && (
-              <div className="control-error">
-                {repeatedReferencePathNames.size} path
-                {repeatedReferencePathNames.size === 1 ? '' : 's'} cannot be
-                used as a reference because they repeat a segment.
+          <>
+            {paths.length > 8 && (
+              <div className="control-group">
+                <label htmlFor="reference-path-search">
+                  Search Reference Paths
+                </label>
+                <input
+                  id="reference-path-search"
+                  className="control-input"
+                  type="search"
+                  value={referencePathQuery}
+                  onChange={event =>
+                    setReferencePathQuery(event.currentTarget.value)
+                  }
+                  onKeyDown={event => {
+                    if (event.key !== 'Enter') return
+                    event.preventDefault()
+                    const firstMatch = filteredReferencePaths.find(
+                      path => !repeatedReferencePathNames.has(path.name),
+                    )
+                    if (firstMatch) {
+                      onChange({
+                        ...options,
+                        referencePathName: firstMatch.name,
+                      })
+                    }
+                  }}
+                  placeholder="Type a path or sample name"
+                  disabled={isComputing}
+                />
+                <div className="control-hint">
+                  {filteredReferencePaths.length.toLocaleString()} of{' '}
+                  {paths.length.toLocaleString()} paths
+                </div>
               </div>
             )}
-          </div>
+            <div className="control-group">
+              <label htmlFor="reference-path-select">
+                <strong>Reference Path:</strong>
+              </label>
+              <select
+                id="reference-path-select"
+                className="control-select"
+                value={
+                  selectedReferencePathIsVisible ? options.referencePathName : ''
+                }
+                onChange={event =>
+                  onChange({
+                    ...options,
+                    referencePathName: event.currentTarget.value,
+                  })
+                }
+                disabled={isComputing}
+              >
+                <option value="">Node ID order</option>
+                {!selectedReferencePathIsVisible && (
+                  <option value={options.referencePathName} disabled>
+                    {options.referencePathName} (hidden by search)
+                  </option>
+                )}
+                {filteredReferencePaths.map(path => {
+                  const hasRepeatedSegments =
+                    repeatedReferencePathNames.has(path.name)
+                  return (
+                    <option
+                      key={path.name}
+                      value={path.name}
+                      disabled={hasRepeatedSegments}
+                    >
+                      {path.name}
+                      {hasRepeatedSegments
+                        ? ' (repeated segments - unavailable)'
+                        : ''}
+                    </option>
+                  )
+                })}
+              </select>
+              <div className="control-hint">
+                Keep the selected path horizontal in traversal order.
+              </div>
+              {repeatedReferencePathNames.size > 0 && (
+                <div className="control-error">
+                  {repeatedReferencePathNames.size} path
+                  {repeatedReferencePathNames.size === 1 ? '' : 's'} cannot be
+                  used as a reference because they repeat a segment.
+                </div>
+              )}
+            </div>
+          </>
         )}
 
         <div className="control-group">
@@ -401,12 +469,24 @@ export function LayoutControls({
         )}
       </div>
 
+      {isLargeGraph && (
+        <div className="control-warning">
+          Large graph - layout may be slow or use a lot of memory.
+        </div>
+      )}
+
       <button
         className="compute-button"
         onClick={onCompute}
         disabled={isComputing}
       >
-        {isComputing ? 'Redrawing...' : 'Redraw'}
+        {isComputing
+          ? hasLayoutResult
+            ? 'Redrawing...'
+            : 'Computing Layout...'
+          : hasLayoutResult
+            ? 'Redraw'
+            : 'Compute Layout'}
       </button>
     </div>
   )

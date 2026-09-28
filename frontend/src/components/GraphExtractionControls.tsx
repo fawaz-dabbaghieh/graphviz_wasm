@@ -40,6 +40,17 @@ interface GraphExtractionControlsProps {
   onExtractRegion: () => void
   isExtracting: boolean
   jobProgress: GfaidxJobProgress | null
+  // Shown right by the submit button, not just in the page-level banner -
+  // users who scrolled down past the header were missing extraction
+  // failures entirely otherwise.
+  extractionError: string | null
+}
+
+function formatElapsedSeconds(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1000)
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`
 }
 
 // Keep queue terminology visible so users can distinguish waiting in the
@@ -96,8 +107,27 @@ export function GraphExtractionControls({
   onExtractRegion,
   isExtracting,
   jobProgress,
+  extractionError,
 }: GraphExtractionControlsProps) {
   const [graphPanelExpanded, setGraphPanelExpanded] = useState(true)
+  // The backend queue/gfaidx/download phases can each individually sit still
+  // for a while - an elapsed-time readout at least confirms the request is
+  // still being worked on rather than stuck.
+  const [jobElapsedMs, setJobElapsedMs] = useState(0)
+  useEffect(() => {
+    if (!isExtracting) {
+      setJobElapsedMs(0)
+      return
+    }
+
+    const startedAt = Date.now()
+    setJobElapsedMs(0)
+    const intervalId = window.setInterval(() => {
+      setJobElapsedMs(Date.now() - startedAt)
+    }, 250)
+
+    return () => window.clearInterval(intervalId)
+  }, [isExtracting])
   const [extractionMode, setExtractionMode] =
     useState<ExtractionMode>('neighborhood')
   const [coordinateTrackQuery, setCoordinateTrackQuery] = useState('')
@@ -174,7 +204,10 @@ export function GraphExtractionControls({
                 role="status"
                 aria-live="polite"
               >
-                <strong>{describeJobProgress(jobProgress)}</strong>
+                <strong>
+                  {describeJobProgress(jobProgress)} (
+                  {formatElapsedSeconds(jobElapsedMs)})
+                </strong>
                 {jobProgress.ticket && (
                   <span>
                     Ticket: <code>{jobProgress.ticket}</code>
@@ -633,6 +666,11 @@ export function GraphExtractionControls({
               >
                 {submitLabel}
               </button>
+              {extractionError && (
+                <div className="gfaidx-job-error" role="alert">
+                  {extractionError}
+                </div>
+              )}
             </form>
           </div>
         )}

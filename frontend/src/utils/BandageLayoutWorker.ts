@@ -207,5 +207,14 @@ export class BandageLayoutWorker {
       this._worker = null
       this._ready = false
     }
+
+    // The WASM layout call blocks the worker thread for its whole duration,
+    // so terminating mid-computation is the only way to actually cancel it -
+    // but that leaves any in-flight computeLayout() promise unresolved
+    // forever unless it's rejected here explicitly.
+    for (const [id, pending] of this._pending.entries()) {
+      pending.reject(new Error('Layout computation was cancelled'))
+      this._pending.delete(id)
+    }
   }
 }

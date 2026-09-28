@@ -1586,9 +1586,16 @@ function GraphCanvasComponent({
         // neighbor) rather than one global step - a global step could still
         // be far coarser than a stretched region's whole bp span, collapsing
         // several evenly-spaced ticks onto the same displayed number.
-        const rulerY = height - 55
+        // Sized so a full-length rotated label (see RULER_LABEL_ANGLE below)
+        // always fits above the canvas bottom edge instead of clipping off.
+        const rulerY = height - 80
         const tickLength = 6
         const clipMargin = 24
+        // A shallower angle than the old 45 degrees keeps each label's
+        // vertical footprint small enough to stay fully on screen, while
+        // still angling labels enough that closely-spaced ticks don't
+        // overlap the way upright text would.
+        const RULER_LABEL_ANGLE = -Math.PI / 6
 
         ctx.save()
 
@@ -1599,7 +1606,7 @@ function GraphCanvasComponent({
 
         ctx.strokeStyle = isDarkMode ? '#888' : '#555'
         ctx.fillStyle = isDarkMode ? '#ccc' : '#333'
-        ctx.font = '10px monospace'
+        ctx.font = '13px monospace'
         ctx.lineWidth = 1
 
         const baselineStartX = transformPoint(minWorldX, 0).x
@@ -1654,7 +1661,7 @@ function GraphCanvasComponent({
             // than upright text would.
             ctx.save()
             ctx.translate(screenX, rulerY + tickLength + 4)
-            ctx.rotate(-Math.PI / 4)
+            ctx.rotate(RULER_LABEL_ANGLE)
             ctx.textAlign = 'right'
             ctx.textBaseline = 'middle'
             ctx.fillText(label, 0, 0)

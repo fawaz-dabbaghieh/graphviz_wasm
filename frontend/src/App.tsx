@@ -29,7 +29,12 @@ import type {
 import './App.css'
 
 interface AppProps {
-  worker: BandageLayoutWorker
+  // null briefly while AppLoader is respawning the worker after a Stop
+  // Layout request - see onStopLayout.
+  worker: BandageLayoutWorker | null
+  // Terminates the current layout worker (cancelling anything in progress)
+  // and replaces it with a fresh one, ready for the next computeLayout call.
+  onStopLayout: () => Promise<void>
 }
 
 function getConfiguredBackendUrl(): string {
@@ -64,9 +69,24 @@ function parseCoordinateInput(value: string): number {
   return Number(value.replace(/[.,]/g, ''))
 }
 
+function formatElapsedSeconds(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1000)
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`
+}
+
 const LOCAL_GRAPH_ID_PREFIX = '__local_graph__:'
 
-function App({ worker }: AppProps) {
+// Past this many nodes, force-directed layout (and especially linear layout
+// with a reference path - see runReferencePathRelax) can take long enough,
+// and use enough memory, that the browser tab can feel stuck. This doesn't
+// block layout, just makes sure the user knows what they're getting into
+// before waiting on it - they can always download the graph and lay it out
+// with a desktop tool instead.
+const LARGE_GRAPH_NODE_WARNING_THRESHOLD = 50000
+
+function App({ worker, onStopLayout }: AppProps) {
   const [layoutOptions, setLayoutOptions] = useState<LayoutOptions>({
     quality: 2,
     linearLayout: false,
@@ -79,6 +99,11 @@ function App({ worker }: AppProps) {
     nodeSegmentLength: 5.0,
     edgeLength: 2.0,
   })
+  // Set when a coordinate-region query's own path/walk couldn't be used as
+  // the linear layout backbone (it repeats a segment), so the user knows why
+  // they got the normal force-directed layout instead of what they asked for.
+  const [linearLayoutFallbackWarning, setLinearLayoutFallbackWarning] =
+    useState<string | null>(null)
   const [layoutResult, setLayoutResult] = useState<LayoutResult | null>(null)
   // Snapshot of the options that actually produced layoutResult, distinct
   // from the live layoutOptions state: the coordinate ruler needs to know
@@ -87,6 +112,13 @@ function App({ worker }: AppProps) {
     useState<LayoutOptions | null>(null)
   const [layoutDuration, setLayoutDuration] = useState<number | null>(null)
   const [isComputing, setIsComputing] = useState(false)
+  // A single computeLayout() call has no way to report intermediate
+  // progress (the WASM/FMMM computation is one opaque blocking call), so
+  // this is the best available substitute: a live elapsed-time readout that
+  // at least confirms the app is still working rather than stuck, especially
+  // since a poorly-covering linear layout reference path can take a minute
+  // or more (see runReferencePathRelax).
+  const [layoutElapsedMs, setLayoutElapsedMs] = useState(0)
   const [fileMenuOpen, setFileMenuOpen] = useState(false)
   const [examplesMenuOpen, setExamplesMenuOpen] = useState(false)
   const [viewMenuOpen, setViewMenuOpen] = useState(false)
@@ -487,10 +519,16 @@ function App({ worker }: AppProps) {
       filename: string,
       source: 'browser' | 'backend-extraction' = 'browser',
       ticket?: string,
+      // Only set for a coordinate-region extraction: identifies the
+      // path/walk the user actually queried, so it can become the linear
+      // layout backbone automatically instead of forcing another manual
+      // step to re-select what was just asked for.
+      regionQuery?: { reference: string; sequence: string },
     ) => {
       try {
         setLoadingFile(true)
         setLoadError(null)
+        setLinearLayoutFallbackWarning(null)
 
         const gfaGraph = parseGFA(text)
         const graph = convertGFAToGraph(gfaGraph, filename)
@@ -516,12 +554,37 @@ function App({ worker }: AppProps) {
         setCurrentGraphTicket(ticket ?? null)
         setColorScheme('uniform')
         setDrawLabels(false)
+
+        const queriedPath = regionQuery
+          ? graph.paths?.find(
+              path =>
+                path.walk?.sequenceName === regionQuery.sequence &&
+                (!regionQuery.reference ||
+                  path.walk?.sampleName === regionQuery.reference),
+            )
+          : undefined
+
+        if (queriedPath && pathHasRepeatedSegments(queriedPath.nodeIds)) {
+          setLinearLayoutFallbackWarning(
+            `Couldn't use "${queriedPath.name}" as the linear layout backbone ` +
+              'because it repeats a segment (it contains a loop) - showing ' +
+              'the normal layout instead.',
+          )
+        }
+
         // Linear layout and path display both key off path names from the
-        // previous graph, which almost never exist in a newly loaded one.
+        // previous graph, which almost never exist in a newly loaded one -
+        // except right after a coordinate-region query, where the queried
+        // path is a natural default backbone as long as it isn't a loop.
         setLayoutOptions(current => ({
           ...current,
-          linearLayout: false,
-          referencePathName: '',
+          linearLayout:
+            queriedPath !== undefined &&
+            !pathHasRepeatedSegments(queriedPath.nodeIds),
+          referencePathName:
+            queriedPath && !pathHasRepeatedSegments(queriedPath.nodeIds)
+              ? queriedPath.name
+              : '',
         }))
         setDrawPaths(false)
         setFileMenuOpen(false)
@@ -788,6 +851,7 @@ function App({ worker }: AppProps) {
         `${selectedIndexedGraph}_${referencePrefix}${sequence}_${start}_${end}${modeSuffix}${coordinateSuffix}.gfa`,
         'backend-extraction',
         ticket,
+        { reference, sequence },
       )
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') return
@@ -981,72 +1045,87 @@ function App({ worker }: AppProps) {
       : { ...layoutOptions, referencePathName: '' }
   }, [currentGraph?.paths, layoutOptions])
 
-  // Compute layout when graph or options change
+  // Matches the "Number of Nodes" count shown above the graph window, so the
+  // warning threshold means the same thing to the user in both places.
+  const graphNodeCount =
+    currentGraph?.sourceRecordCounts?.segments ?? currentGraph?.nodes.length ?? 0
+  const isLargeGraph = graphNodeCount > LARGE_GRAPH_NODE_WARNING_THRESHOLD
+
+  // Use a ref to track the current request ID, so a stale in-flight
+  // computation (e.g. the user loaded a different graph, or hit Stop, while
+  // one was still running) can't overwrite state after the fact.
+  const requestIdRef = useRef(0)
+
+  // Layout is user-triggered rather than automatic: loading a graph is
+  // instant regardless of size, and a potentially slow/heavy layout only
+  // starts when the user actually asks for it via the Compute
+  // Layout/Redraw button - the same load-then-layout split BandageNG uses,
+  // so a huge graph never makes the app look stuck the moment it's opened.
   const computeLayout = useCallback(async () => {
-    if (!worker) {
-      console.warn('Worker not ready')
+    if (!worker || !currentGraph) {
+      console.warn('Worker not ready or no graph loaded')
       return
     }
 
+    const currentRequestId = ++requestIdRef.current
     setIsComputing(true)
     try {
-      if (!currentGraph) return
-
       const { result, duration } = await worker.computeLayout(
         currentGraph,
         effectiveLayoutOptions,
       )
-      setLayoutResult(result)
-      setLayoutDuration(duration)
-      setAppliedLayoutOptions(effectiveLayoutOptions)
+
+      if (currentRequestId === requestIdRef.current) {
+        setLayoutResult(result)
+        setLayoutDuration(duration)
+        setAppliedLayoutOptions(effectiveLayoutOptions)
+      }
     } catch (error) {
-      console.error('Layout computation failed:', error)
+      if (currentRequestId === requestIdRef.current) {
+        console.error('Layout computation failed:', error)
+      }
     } finally {
-      setIsComputing(false)
+      if (currentRequestId === requestIdRef.current) {
+        setIsComputing(false)
+      }
     }
   }, [worker, currentGraph, effectiveLayoutOptions])
 
-  // Use a ref to track the current request ID
-  const requestIdRef = useRef(0)
-
-  // Auto-compute on graph change (but not on layout options change)
+  // A newly loaded graph starts with no layout at all (see computeLayout
+  // above) - this just makes sure a *previous* graph's stale layout/result
+  // doesn't linger on screen while the new one waits for the user to
+  // trigger a layout.
   useEffect(() => {
-    if (!worker || !currentGraph) {
-      setIsComputing(false)
+    requestIdRef.current++
+    setLayoutResult(null)
+    setAppliedLayoutOptions(null)
+    setIsComputing(false)
+  }, [currentGraph])
+
+  useEffect(() => {
+    if (!isComputing) {
+      setLayoutElapsedMs(0)
       return
     }
 
-    // Increment request ID for this new computation
-    const currentRequestId = ++requestIdRef.current
+    const startedAt = Date.now()
+    setLayoutElapsedMs(0)
+    const intervalId = window.setInterval(() => {
+      setLayoutElapsedMs(Date.now() - startedAt)
+    }, 250)
 
-    const runLayout = async () => {
-      setIsComputing(true)
-      try {
-        const { result, duration } = await worker.computeLayout(
-          currentGraph,
-          effectiveLayoutOptions,
-        )
+    return () => window.clearInterval(intervalId)
+  }, [isComputing])
 
-        // Only update state if this is still the latest request
-        if (currentRequestId === requestIdRef.current) {
-          setLayoutResult(result)
-          setLayoutDuration(duration)
-          setAppliedLayoutOptions(effectiveLayoutOptions)
-          setIsComputing(false)
-        }
-      } catch (error) {
-        if (currentRequestId === requestIdRef.current) {
-          console.error('Layout computation failed:', error)
-          setIsComputing(false)
-        }
-      }
-    }
-
-    runLayout()
-    // Note: layoutOptions is intentionally not in deps
-    // This effect only runs when the graph changes, not when changing options
-    // The Redraw button is for recomputing with new options
-  }, [currentGraph, worker])
+  // Cancels an in-progress layout computation. requestIdRef is bumped first
+  // so the terminated worker's eventual rejection (see BandageLayoutWorker's
+  // terminate()) is recognized as stale and ignored rather than clearing
+  // isComputing a second time.
+  const handleStopLayout = useCallback(async () => {
+    requestIdRef.current++
+    setIsComputing(false)
+    await onStopLayout()
+  }, [onStopLayout])
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -1179,26 +1258,6 @@ function App({ worker }: AppProps) {
                       </div>
                     )}
                   </div>
-                  <button
-                    className="dropdown-item"
-                    onClick={() => {
-                      handleDownloadGfa()
-                      setFileMenuOpen(false)
-                    }}
-                    disabled={
-                      !currentGraph ||
-                      (currentGraphGfaText === null &&
-                        currentGraphTicket === null) ||
-                      downloadingGfa
-                    }
-                  >
-                    <div className="dropdown-item-title">
-                      {downloadingGfa ? 'Downloading...' : 'Download GFA'}
-                    </div>
-                    <div className="dropdown-item-desc">
-                      Save the currently loaded graph to a .gfa file
-                    </div>
-                  </button>
                 </div>
               )}
             </div>
@@ -1233,6 +1292,19 @@ function App({ worker }: AppProps) {
                 </div>
               )}
             </div>
+
+            <button
+              className="menu-button menu-button-accent"
+              onClick={handleDownloadGfa}
+              disabled={
+                !currentGraph ||
+                (currentGraphGfaText === null && currentGraphTicket === null) ||
+                downloadingGfa
+              }
+              title="Save the currently loaded graph to a .gfa file"
+            >
+              {downloadingGfa ? 'Downloading...' : 'Download Current Graph'}
+            </button>
           </div>
           {SHOW_BACKEND_URL_CONTROL && (
             <form
@@ -1309,6 +1381,7 @@ function App({ worker }: AppProps) {
             onExtractRegion={handleExtractRegion}
             isExtracting={isExtractingSubgraph}
             jobProgress={gfaidxJobProgress}
+            extractionError={loadError}
           />
           <LayoutControls
             options={layoutOptions}
@@ -1333,6 +1406,9 @@ function App({ worker }: AppProps) {
               !!currentGraph?.paths && currentGraph.paths.length > 0
             }
             paths={currentGraph?.paths ?? []}
+            fallbackWarning={linearLayoutFallbackWarning}
+            hasLayoutResult={!!layoutResult}
+            isLargeGraph={isLargeGraph}
           />
         </div>
 
@@ -1384,6 +1460,10 @@ function App({ worker }: AppProps) {
                         Number of Edges:{' '}
                         {currentGraph.sourceRecordCounts.links.toLocaleString()}
                       </span>
+                      <span>
+                        Paths/Walks:{' '}
+                        {(currentGraph.paths?.length ?? 0).toLocaleString()}
+                      </span>
                     </div>
                   )}
                 </div>
@@ -1425,7 +1505,21 @@ function App({ worker }: AppProps) {
               {isComputing ? (
                 <div className="loading">
                   <div className="spinner"></div>
-                  <p>Computing layout...</p>
+                  <p>Computing layout... ({formatElapsedSeconds(layoutElapsedMs)})</p>
+                  {layoutElapsedMs > 15000 && (
+                    <p className="loading-hint">
+                      Still working - large graphs, or Linear Layout with a
+                      reference path that only covers part of the graph, can
+                      take a while.
+                    </p>
+                  )}
+                  <button
+                    type="button"
+                    className="stop-layout-button"
+                    onClick={handleStopLayout}
+                  >
+                    Stop Layout
+                  </button>
                 </div>
               ) : layoutResult ? (
                 <>
@@ -1486,7 +1580,20 @@ function App({ worker }: AppProps) {
                 </>
               ) : currentGraph ? (
                 <div className="placeholder">
-                  <p>Click "Redraw" to visualize the graph</p>
+                  <div className="placeholder-content">
+                    <p>Click "Compute Layout" to visualize the graph</p>
+                    {isLargeGraph && (
+                      <p className="placeholder-warning">
+                        This graph has {graphNodeCount.toLocaleString()}{' '}
+                        nodes, more than the{' '}
+                        {LARGE_GRAPH_NODE_WARNING_THRESHOLD.toLocaleString()}{' '}
+                        layout tends to stay comfortable at. Laying it out
+                        may be slow or use a lot of memory - you can still
+                        try it, or use "Download Current Graph" above and
+                        process it with a desktop tool instead.
+                      </p>
+                    )}
+                  </div>
                 </div>
               ) : (
                 <div className="placeholder">

@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 
 interface HelpIconProps {
@@ -20,16 +20,50 @@ interface TooltipPosition {
 // because several call sites sit inside a collapsible panel
 // (.advanced-settings) that clips overflow for its own rounded corners - a
 // CSS-anchored tooltip would get cut off there.
+const VIEWPORT_MARGIN = 8
+
 export function HelpIcon({ text }: HelpIconProps) {
   const iconRef = useRef<HTMLSpanElement>(null)
+  const tooltipRef = useRef<HTMLSpanElement>(null)
   const [position, setPosition] = useState<TooltipPosition | null>(null)
+  // The tooltip's own width isn't known until it's actually in the DOM (it
+  // depends on the text), so it first renders hidden at the icon-centered
+  // position, gets measured, and only becomes visible once nudged back
+  // inside the viewport - otherwise a help icon near the left/right edge of
+  // the window produced a tooltip that ran off-screen and was unreadable.
+  const [visible, setVisible] = useState(false)
 
   const show = () => {
     const rect = iconRef.current?.getBoundingClientRect()
     if (!rect) return
+    setVisible(false)
     setPosition({ top: rect.top - 6, left: rect.left + rect.width / 2 })
   }
-  const hide = () => setPosition(null)
+  const hide = () => {
+    setPosition(null)
+    setVisible(false)
+  }
+
+  useLayoutEffect(() => {
+    if (!position || visible) return
+    const tooltip = tooltipRef.current
+    if (!tooltip) return
+
+    const rect = tooltip.getBoundingClientRect()
+    const halfWidth = rect.width / 2
+    let left = position.left
+    if (left - halfWidth < VIEWPORT_MARGIN) {
+      left = halfWidth + VIEWPORT_MARGIN
+    } else if (left + halfWidth > window.innerWidth - VIEWPORT_MARGIN) {
+      left = window.innerWidth - VIEWPORT_MARGIN - halfWidth
+    }
+    const top = Math.max(position.top, rect.height + VIEWPORT_MARGIN)
+
+    if (left !== position.left || top !== position.top) {
+      setPosition({ top, left })
+    }
+    setVisible(true)
+  }, [position, visible])
 
   return (
     <span
@@ -54,11 +88,13 @@ export function HelpIcon({ text }: HelpIconProps) {
       {position &&
         createPortal(
           <span
+            ref={tooltipRef}
             className="help-icon-tooltip"
             role="tooltip"
             style={{
               top: position.top,
               left: position.left,
+              visibility: visible ? 'visible' : 'hidden',
             }}
           >
             {text}

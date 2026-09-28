@@ -1,7 +1,13 @@
-import { useState, useEffect } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { BandageLayoutWorker } from './utils/BandageLayoutWorker'
 import App from './App'
 import './App.css'
+
+async function createReadyWorker(): Promise<BandageLayoutWorker> {
+  const newWorker = new BandageLayoutWorker()
+  await newWorker.ready()
+  return newWorker
+}
 
 export function AppLoader() {
   // AppLoader owns the WASM worker lifecycle so App can assume the layout
@@ -9,20 +15,27 @@ export function AppLoader() {
   const [worker, setWorker] = useState<BandageLayoutWorker | null>(null)
   const [isWorkerReady, setIsWorkerReady] = useState(false)
   const [workerError, setWorkerError] = useState<string | null>(null)
+  // Tracks the live worker instance outside of React state so
+  // respawnWorker() always terminates the *current* one, even if it's
+  // called again before a previous respawn's state update has landed.
+  const workerRef = useRef<BandageLayoutWorker | null>(null)
 
   // Initialize worker
   useEffect(() => {
-    let currentWorker: BandageLayoutWorker | null = null
+    let cancelled = false
 
     const initWorker = async () => {
       try {
         console.log('Initializing Bandage Layout worker...')
-        const newWorker = new BandageLayoutWorker()
-
-        await newWorker.ready()
+        const newWorker = await createReadyWorker()
         console.log('Worker initialized successfully')
 
-        currentWorker = newWorker
+        if (cancelled) {
+          newWorker.terminate()
+          return
+        }
+
+        workerRef.current = newWorker
         setWorker(newWorker)
         setIsWorkerReady(true)
       } catch (error) {
@@ -36,11 +49,36 @@ export function AppLoader() {
     initWorker()
 
     return () => {
-      if (currentWorker) {
+      cancelled = true
+      if (workerRef.current) {
         // Tear the worker down when the React tree unmounts to avoid leaving a
         // background thread alive during navigation or hot reloads.
-        currentWorker.terminate()
+        workerRef.current.terminate()
+        workerRef.current = null
       }
+    }
+  }, [])
+
+  // The WASM layout call blocks its worker thread for the whole computation,
+  // so the only way to actually cancel one already running is to kill that
+  // thread outright - then a fresh worker takes its place so later layout
+  // requests still work. App stays mounted throughout (its `worker` prop
+  // just briefly points at the new instance instead of unmounting), so
+  // in-progress state like the loaded graph is never lost.
+  const respawnWorker = useCallback(async () => {
+    workerRef.current?.terminate()
+    workerRef.current = null
+    setWorker(null)
+
+    try {
+      const newWorker = await createReadyWorker()
+      workerRef.current = newWorker
+      setWorker(newWorker)
+    } catch (error) {
+      console.error('Failed to restart layout worker:', error)
+      setWorkerError(
+        error instanceof Error ? error.message : 'Unknown error occurred',
+      )
     }
   }, [])
 
@@ -80,6 +118,7 @@ export function AppLoader() {
     )
   }
 
-  // Render App once worker is ready
-  return <App worker={worker!} />
+  // Render App once worker is ready. worker can briefly go back to null
+  // during respawnWorker() (see above) without unmounting App itself.
+  return <App worker={worker} onStopLayout={respawnWorker} />
 }

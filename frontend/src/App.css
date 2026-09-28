@@ -237,6 +237,41 @@ body:has(.app.dark-mode) {
   background: #505050;
 }
 
+/* A single always-visible action, distinct from the File/View dropdowns, so
+   it doesn't get lost inside a menu the user has to think to open. */
+.menu-button-accent {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: #fff;
+  font-weight: 500;
+}
+
+.menu-button-accent:hover:not(:disabled) {
+  background: #1d4ed8;
+}
+
+.menu-button-accent:disabled {
+  background: #93b4ec;
+  border-color: #93b4ec;
+  cursor: not-allowed;
+}
+
+.app.dark-mode .menu-button-accent {
+  background: #3b82f6;
+  border-color: #3b82f6;
+  color: #fff;
+}
+
+.app.dark-mode .menu-button-accent:hover:not(:disabled) {
+  background: #2563eb;
+}
+
+.app.dark-mode .menu-button-accent:disabled {
+  background: #3a4b6b;
+  border-color: #3a4b6b;
+  color: #9aa5b8;
+}
+
 .dropdown-menu {
   position: absolute;
   top: 100%;
@@ -491,6 +526,23 @@ body:has(.app.dark-mode) {
   color: #b9d7f5;
 }
 
+.gfaidx-job-error {
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid #fcc;
+  border-radius: 4px;
+  background: #fee;
+  color: #c33;
+  font-size: 13px;
+  white-space: pre-wrap;
+}
+
+.app.dark-mode .gfaidx-job-error {
+  border-color: #7a3b3b;
+  background: #3a1f1f;
+  color: #f5a9a9;
+}
+
 .graph-selection-section {
   margin: 0;
   padding: 0;
@@ -578,6 +630,23 @@ body:has(.app.dark-mode) {
   color: #b42318;
   font-size: 12px;
   overflow-wrap: anywhere;
+}
+
+.control-warning {
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border: 1px solid #f0c36d;
+  border-radius: 4px;
+  background: #fff8e6;
+  color: #8a6116;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.app.dark-mode .control-warning {
+  border-color: #7a611f;
+  background: #3a300f;
+  color: #e8c877;
 }
 
 .app.dark-mode .control-error {
@@ -1142,6 +1211,28 @@ canvas {
   gap: 10px;
 }
 
+.loading-hint {
+  max-width: 360px;
+  text-align: center;
+  font-size: 13px;
+  color: #777;
+}
+
+.stop-layout-button {
+  margin-top: 8px;
+  padding: 6px 16px;
+  background: #b42318;
+  border: 1px solid #b42318;
+  border-radius: 4px;
+  color: #fff;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.stop-layout-button:hover {
+  background: #8f1c13;
+}
+
 .spinner {
   width: 40px;
   height: 40px;
@@ -1170,6 +1261,29 @@ canvas {
   background: #f9f9f9;
   border: 2px dashed #ddd;
   color: #999;
+}
+
+.placeholder-content {
+  max-width: 480px;
+  padding: 0 20px;
+  text-align: center;
+}
+
+.placeholder-warning {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid #f0c36d;
+  border-radius: 4px;
+  background: #fff8e6;
+  color: #8a6116;
+  font-size: 13px;
+  text-align: left;
+}
+
+.app.dark-mode .placeholder-warning {
+  border-color: #7a611f;
+  background: #3a300f;
+  color: #e8c877;
 }
 
 .app.dark-mode .placeholder {
