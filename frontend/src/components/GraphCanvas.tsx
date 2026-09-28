@@ -21,7 +21,8 @@ import {
   updateDisplayGraphNodePositions,
   resolveDisplaySegments,
   stripNodeOrientation,
-  type DisplayEdgeTraversal,
+  resolveTraversalEdge,
+  resolveTraversalPathName,
 } from '../utils/displayGraph'
 import { clampZoom } from '../utils/zoom'
 
@@ -121,7 +122,7 @@ const SEQUENCE_PREVIEW_SUFFIX_LENGTH = Math.floor(SEQUENCE_PREVIEW_CUTOFF / 2)
 // while retaining small trackpad deltas for continuous motion.
 const ROTATION_RADIANS_PER_PIXEL = 0.002
 const MAX_ROTATION_STEP = Math.PI / 15
-const NO_PATH_TRAVERSALS: DisplayEdgeTraversal[] = []
+const NO_PATH_TRAVERSALS: Int32Array = new Int32Array(0)
 
 // Keep accumulated angles bounded so trigonometric calculations remain stable
 // after long rotation sessions.
@@ -561,10 +562,8 @@ function GraphCanvasComponent({
   )
 
   const visiblePathTraversalsByList = useMemo(() => {
-    const visibleTraversals = new Map<
-      DisplayEdgeTraversal[],
-      DisplayEdgeTraversal[]
-    >()
+    const visibleTraversals = new Map<Int32Array, Int32Array>()
+    const paths = graph.paths ?? []
 
     for (const edge of displayGraphTopology.edges) {
       if (
@@ -578,18 +577,18 @@ function GraphCanvasComponent({
       } else {
         visibleTraversals.set(
           edge.pathTraversals,
-          edge.pathTraversals.filter(traversal =>
-            visiblePathIds.has(traversal.pathId),
+          edge.pathTraversals.filter(encoded =>
+            visiblePathIds.has(resolveTraversalPathName(encoded, paths)),
           ),
         )
       }
     }
 
     return visibleTraversals
-  }, [displayGraphTopology.edges, drawPaths, visiblePathIds])
+  }, [displayGraphTopology.edges, drawPaths, visiblePathIds, graph.paths])
 
   const getVisiblePathTraversals = useCallback(
-    (pathTraversals: DisplayEdgeTraversal[]) =>
+    (pathTraversals: Int32Array) =>
       visiblePathTraversalsByList.get(pathTraversals) ?? NO_PATH_TRAVERSALS,
     [visiblePathTraversalsByList],
   )
@@ -1335,17 +1334,22 @@ function GraphCanvasComponent({
       } else {
         const offsetNormal = getEdgeOffsetNormal(displayEdge.representativeEdge)
 
-        visiblePathTraversals.forEach((traversal, pathIdx) => {
+        visiblePathTraversals.forEach((encoded, pathIdx) => {
           const offset = getEdgeOffset(pathIdx, numPaths, scale)
           const offsetX = (offsetNormal?.x ?? 0) * offset
           const offsetY = (offsetNormal?.y ?? 0) * offset
-          const color = pathColors.get(traversal.pathId) ?? '#888'
+          const pathName = resolveTraversalPathName(encoded, graph.paths ?? [])
+          const color = pathColors.get(pathName) ?? '#888'
           const lineWidth = isHovered
             ? connectorThickness + 1
             : connectorThickness
+          const traversalEdge = resolveTraversalEdge(
+            encoded,
+            displayEdge.representativeEdge,
+          )
 
           drawEdge(
-            traversal.edge,
+            traversalEdge,
             offsetX,
             offsetY,
             color,
@@ -1461,11 +1465,15 @@ function GraphCanvasComponent({
         } else {
           const offsetNormal = getEdgeOffsetNormal(displayEdge.representativeEdge)
 
-          visiblePathTraversals.forEach((traversal, pathIdx) => {
+          visiblePathTraversals.forEach((encoded, pathIdx) => {
             const offset = getEdgeOffset(pathIdx, numPaths, scale)
             const offsetX = (offsetNormal?.x ?? 0) * offset
             const offsetY = (offsetNormal?.y ?? 0) * offset
-            drawHitArea(traversal.edge, offsetX, offsetY)
+            const traversalEdge = resolveTraversalEdge(
+              encoded,
+              displayEdge.representativeEdge,
+            )
+            drawHitArea(traversalEdge, offsetX, offsetY)
           })
         }
       })
@@ -2197,11 +2205,15 @@ function GraphCanvasComponent({
             const offsetNormal = getEdgeOffsetNormal(displayEdge.representativeEdge)
             let minDist = Infinity
 
-            visiblePathTraversals.forEach((traversal, pathIdx) => {
+            visiblePathTraversals.forEach((encoded, pathIdx) => {
               const offset = getEdgeOffset(pathIdx, numPaths, scale)
               const offsetX = (offsetNormal?.x ?? 0) * offset
               const offsetY = (offsetNormal?.y ?? 0) * offset
-              const d = checkEdgeDistance(traversal.edge, offsetX, offsetY)
+              const traversalEdge = resolveTraversalEdge(
+                encoded,
+                displayEdge.representativeEdge,
+              )
+              const d = checkEdgeDistance(traversalEdge, offsetX, offsetY)
               minDist = Math.min(minDist, d)
             })
             dist = minDist
@@ -2601,11 +2613,14 @@ function GraphCanvasComponent({
           const toNode = displayGraph.nodesByKey.get(edge.toNodeKey)?.node
           if (!fromNode || !toNode) return null
 
+          const graphPaths = graph.paths ?? []
           const visiblePathTraversals = getVisiblePathTraversals(
             edge.pathTraversals,
           )
           const visibleEdgePathIdSet = new Set(
-            visiblePathTraversals.map(traversal => traversal.pathId),
+            Array.from(visiblePathTraversals, encoded =>
+              resolveTraversalPathName(encoded, graphPaths),
+            ),
           )
           const visibleEdgePathIds = Array.from(visibleEdgePathIdSet)
 
@@ -2614,17 +2629,22 @@ function GraphCanvasComponent({
           // for the tooltip; path visibility affects only the status/count.
           const pathDirectionGroups = Array.from(
             edge.pathTraversals.reduce(
-              (groups, traversal) => {
-                const directionKey = `${traversal.edge.from}->${traversal.edge.to}`
+              (groups, encoded) => {
+                const traversalEdge = resolveTraversalEdge(
+                  encoded,
+                  edge.representativeEdge,
+                )
+                const pathName = resolveTraversalPathName(encoded, graphPaths)
+                const directionKey = `${traversalEdge.from}->${traversalEdge.to}`
                 const existingGroup = groups.get(directionKey)
 
                 if (existingGroup) {
-                  existingGroup.pathIds.add(traversal.pathId)
+                  existingGroup.pathIds.add(pathName)
                 } else {
                   groups.set(directionKey, {
-                    from: traversal.edge.from,
-                    to: traversal.edge.to,
-                    pathIds: new Set([traversal.pathId]),
+                    from: traversalEdge.from,
+                    to: traversalEdge.to,
+                    pathIds: new Set([pathName]),
                   })
                 }
 

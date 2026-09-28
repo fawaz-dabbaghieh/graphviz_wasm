@@ -14,9 +14,52 @@ export interface DisplayNode {
   segments: NodeSegment[]
 }
 
-export interface DisplayEdgeTraversal {
-  edge: GraphEdge
-  pathId: string
+// Each traversal only ever needs two things: which path it belongs to, and
+// whether it runs the same direction as the edge's representativeEdge or its
+// reverse-complement (a path can traverse either side of a stored L-line -
+// see resolveTraversalEdge). Packing both into one signed integer - the path
+// index for a forward traversal, -(index + 1) for a reverse-complement one -
+// avoids a per-traversal object allocation entirely. On a real ~54k-node,
+// 470-haplotype pangenome graph this array held ~15 million entries; the
+// previous {edge, pathId} object-per-entry representation measured at ~600MB
+// for that alone, versus a few dozen MB as plain Int32Arrays here.
+export type EncodedTraversal = number
+
+export function decodeTraversalPathIndex(encoded: EncodedTraversal): number {
+  return encoded >= 0 ? encoded : -encoded - 1
+}
+
+export function decodeTraversalIsForward(encoded: EncodedTraversal): boolean {
+  return encoded >= 0
+}
+
+function encodeTraversal(pathIndex: number, isForward: boolean): EncodedTraversal {
+  return isForward ? pathIndex : -pathIndex - 1
+}
+
+// Reconstructs the {from, to} a traversal actually runs, without needing to
+// have stored a whole edge object for it. A forward traversal is exactly
+// representativeEdge; a reverse-complement one swaps and flips both ends.
+// overlap is never read off a per-traversal edge anywhere in the app (only
+// off the canonical GraphEdge), so reusing representativeEdge's value for
+// both directions is safe.
+export function resolveTraversalEdge(
+  encoded: EncodedTraversal,
+  representativeEdge: GraphEdge,
+): GraphEdge {
+  if (decodeTraversalIsForward(encoded)) return representativeEdge
+  return {
+    from: getReverseComplementNodeId(representativeEdge.to),
+    to: getReverseComplementNodeId(representativeEdge.from),
+    overlap: representativeEdge.overlap,
+  }
+}
+
+export function resolveTraversalPathName(
+  encoded: EncodedTraversal,
+  paths: GraphPath[],
+): string {
+  return paths[decodeTraversalPathIndex(encoded)]!.name
 }
 
 export interface DisplayEdge {
@@ -26,7 +69,7 @@ export interface DisplayEdge {
   fromNodeKey: string
   toNodeKey: string
   pathIds: string[]
-  pathTraversals: DisplayEdgeTraversal[]
+  pathTraversals: Int32Array
 }
 
 export interface DisplayGraph {
@@ -146,40 +189,57 @@ export function buildDisplayGraph(graph: Graph): DisplayGraph {
     edgeGroups.get(key)!.push(edge)
   }
 
-  const pathTraversalsByEdgeKey = new Map<string, DisplayEdgeTraversal[]>()
-  for (const path of graph.paths ?? []) {
+  // representativeEdge has to be chosen before traversals can be encoded
+  // relative to it (forward vs. reverse-complement), so this builds the edge
+  // shells first and fills in pathTraversals/pathIds in a second pass below.
+  const edgeShells = new Map<
+    string,
+    {
+      representativeEdge: GraphEdge
+      groupedEdges: GraphEdge[]
+      traversals: number[]
+    }
+  >()
+  for (const [key, groupedEdges] of edgeGroups) {
+    edgeShells.set(key, {
+      representativeEdge: chooseRepresentativeEdge(groupedEdges, nodesByKey),
+      groupedEdges,
+      traversals: [],
+    })
+  }
+
+  const paths = graph.paths ?? []
+  const pathIndexByName = new Map(paths.map((path, index) => [path.name, index]))
+
+  for (const path of paths) {
+    const pathIndex = pathIndexByName.get(path.name)!
     for (let i = 0; i < path.nodeIds.length - 1; i++) {
       const from = path.nodeIds[i]!
       const to = path.nodeIds[i + 1]!
       const edgeKey = getCanonicalEdgeKeyForPair(from, to)
-      const matchingEdges = edgeGroups.get(edgeKey) ?? []
+      const shell = edgeShells.get(edgeKey)
+      if (!shell) continue
 
-      if (!pathTraversalsByEdgeKey.has(edgeKey)) {
-        pathTraversalsByEdgeKey.set(edgeKey, [])
-      }
-
-      // A path can traverse the reverse-complement of a stored L-line. In that
-      // case there is still only one displayed edge, but we synthesize an
-      // oriented traversal so the overlay can keep the path direction.
-      const edgeForTraversal =
-        matchingEdges.find(edge => edge.from === from && edge.to === to) ??
-        ({
-          from,
-          to,
-          overlap: matchingEdges[0]?.overlap ?? 0,
-        } satisfies GraphEdge)
-
-      pathTraversalsByEdgeKey.get(edgeKey)!.push({
-        edge: edgeForTraversal,
-        pathId: path.name,
-      })
+      // A path can traverse either this edge's stored direction or its
+      // reverse-complement (see resolveTraversalEdge) - which is which can
+      // only be decided once representativeEdge exists, unlike the
+      // direction-agnostic canonical key used to find it above.
+      const isForward =
+        from === shell.representativeEdge.from &&
+        to === shell.representativeEdge.to
+      shell.traversals.push(encodeTraversal(pathIndex, isForward))
     }
   }
 
-  const edges = Array.from(edgeGroups.entries(), ([key, groupedEdges]) => {
-    const representativeEdge = chooseRepresentativeEdge(groupedEdges, nodesByKey)
-    const pathTraversals = pathTraversalsByEdgeKey.get(key) ?? []
-    const pathIds = Array.from(new Set(pathTraversals.map(path => path.pathId)))
+  const edges = Array.from(edgeShells.entries(), ([key, shell]) => {
+    const { representativeEdge, groupedEdges, traversals } = shell
+    const pathTraversals = Int32Array.from(traversals)
+
+    const pathIndexSet = new Set<number>()
+    for (const encoded of pathTraversals) {
+      pathIndexSet.add(decodeTraversalPathIndex(encoded))
+    }
+    const pathIds = Array.from(pathIndexSet, index => paths[index]!.name)
 
     return {
       key,
@@ -230,8 +290,8 @@ export function filterDisplayGraphByPaths(
 
   const nodes = displayGraph.nodes.filter(node => selectedNodeKeys.has(node.key))
   const edges = displayGraph.edges.filter(edge =>
-    edge.pathTraversals.some(traversal =>
-      selectedPathIds.has(traversal.pathId),
+    edge.pathTraversals.some(encoded =>
+      selectedPathIds.has(resolveTraversalPathName(encoded, paths)),
     ),
   )
 
