@@ -93,6 +93,45 @@ body:has(.app.dark-mode) {
   background: white;
 }
 
+.beta-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  background: #fff8e6;
+  border-bottom: 1px solid #f0c36d;
+  color: #8a6116;
+  font-size: 13px;
+}
+
+.beta-banner a {
+  color: #8a6116;
+  font-weight: 600;
+}
+
+.beta-banner-dismiss {
+  margin-left: auto;
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  color: #8a6116;
+  padding: 0 4px;
+}
+
+.app.dark-mode .beta-banner {
+  background: #3a300f;
+  border-bottom-color: #7a611f;
+  color: #e8c877;
+}
+
+.app.dark-mode .beta-banner a,
+.app.dark-mode .beta-banner-dismiss {
+  color: #e8c877;
+}
+
 .app.dark-mode .app-header {
   background: #2a2a2a;
   border-bottom-color: #444;

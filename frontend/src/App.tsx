@@ -77,6 +77,9 @@ function formatElapsedSeconds(ms: number): string {
 }
 
 const LOCAL_GRAPH_ID_PREFIX = '__local_graph__:'
+// Bump this when the beta notice's wording changes meaningfully, so it
+// reappears once for users who already dismissed an older version.
+const BETA_BANNER_VERSION = '1'
 
 // Past this many nodes, force-directed layout (and especially linear layout
 // with a reference path - see runReferencePathRelax) can take long enough,
@@ -149,6 +152,11 @@ function App({ worker, onStopLayout }: AppProps) {
     const saved = localStorage.getItem('darkMode')
     return saved !== null ? JSON.parse(saved) : true
   })
+  // Bumping BETA_BANNER_VERSION makes the notice reappear even for users who
+  // already dismissed an older version of it.
+  const [betaBannerDismissed, setBetaBannerDismissed] = useState(
+    () => localStorage.getItem('betaBannerDismissed') === BETA_BANNER_VERSION,
+  )
   const [colorScheme, setColorScheme] = useState<ColorScheme>('uniform')
   const [zoom, setZoom] = useState<number>(1)
   const [zoomRequestId, setZoomRequestId] = useState(0)
@@ -1183,6 +1191,37 @@ function App({ worker, onStopLayout }: AppProps) {
 
   return (
     <div className={`app ${isDarkMode ? 'dark-mode' : ''}`}>
+      {!betaBannerDismissed && (
+        <div className="beta-banner" role="note">
+          <span>
+            <strong>Beta:</strong> this site is still in beta and only a
+            handful of graphs are preset for testing - more will be added to
+            the server over time. Subgraph extraction is currently slow
+            because graphs are served from a spinning-disk HDD; this will
+            move to NVMe storage soon, which should make extraction much
+            faster. Suggestions and issues are welcome on{' '}
+            <a
+              href="https://github.com/fawaz-dabbaghieh/graphviz_wasm/issues"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              GitHub
+            </a>
+            .
+          </span>
+          <button
+            type="button"
+            className="beta-banner-dismiss"
+            aria-label="Dismiss"
+            onClick={() => {
+              setBetaBannerDismissed(true)
+              localStorage.setItem('betaBannerDismissed', BETA_BANNER_VERSION)
+            }}
+          >
+            ×
+          </button>
+        </div>
+      )}
       <header className="app-header">
         <div className="header-top">
           <h1>BandageJS</h1>
