@@ -34,6 +34,11 @@ interface LayoutControlsProps {
   fallbackWarning: string | null
   hasLayoutResult: boolean
   isLargeGraph: boolean
+  // Feature B: gene track toggle. Disabled (not hidden) when no BED is
+  // loaded yet, so the control is discoverable before the user has one.
+  hasGeneTrack: boolean
+  showGeneTrack: boolean
+  onShowGeneTrackChange: (show: boolean) => void
 }
 
 export function LayoutControls({
@@ -58,6 +63,9 @@ export function LayoutControls({
   fallbackWarning,
   hasLayoutResult,
   isLargeGraph,
+  hasGeneTrack,
+  showGeneTrack,
+  onShowGeneTrackChange,
 }: LayoutControlsProps) {
   // The zoom slider is temporarily hidden (broken sync with canvas wheel-zoom);
   // `zoom`/`onZoomChange` stay in the prop contract for when it's re-enabled.
@@ -228,6 +236,22 @@ export function LayoutControls({
           </label>
           <div className="control-hint">
             Show the path list. Select paths there to draw overlays.
+          </div>
+        </div>
+
+        <div className="control-group">
+          <label>
+            <input
+              type="checkbox"
+              checked={showGeneTrack}
+              onChange={e => onShowGeneTrackChange(e.target.checked)}
+              disabled={isComputing || !hasGeneTrack}
+            />{' '}
+            Show Gene Track{!hasGeneTrack && ' (no BED loaded)'}
+          </label>
+          <div className="control-hint">
+            Draw genes above the ruler. Load a BED file from the Styling tab,
+            and select a reference path with Linear Layout above.
           </div>
         </div>
       </div>

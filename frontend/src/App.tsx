@@ -6,6 +6,7 @@ import { PathsLegend } from './components/PathsLegend'
 import { StatsPanel } from './components/StatsPanel'
 import { GraphExtractionControls } from './components/GraphExtractionControls'
 import { BedAnnotationPanel } from './components/BedAnnotationPanel'
+import { NodeStyleCsvPanel } from './components/NodeStyleCsvPanel'
 import { urlExamples } from './data/urlExamples'
 import { BandageLayoutWorker } from './utils/BandageLayoutWorker'
 import { parseGFA } from './utils/gfaParser'
@@ -14,6 +15,8 @@ import {
   pathHasRepeatedSegments,
   stripNodeOrientation,
 } from './utils/displayGraph'
+import { parseNodeStyleCsv, applyNodeStyleCsv } from './utils/nodeStyleCsv'
+import { parseGeneTrackBed, type GeneRecord } from './utils/geneTrackBed'
 import { clampZoom } from './utils/zoom'
 import { readBackendError, runGfaidxJob } from './api/gfaidx'
 import type { GfaidxJobProgress } from './api/gfaidx'
@@ -177,6 +180,40 @@ function App({ worker, onStopLayout }: AppProps) {
   const [nodeColorOverrides, setNodeColorOverrides] = useState<
     Record<string, string>
   >({})
+  // Kept separate from nodeColorOverrides/above (rather than merged into one
+  // map with provenance tracking) so a CSV load/clear can never disturb
+  // path-sourced colors: the two maps are only combined at render time in
+  // GraphCanvas, with the CSV taking precedence on any node both cover.
+  const [csvColorOverrides, setCsvColorOverrides] = useState<
+    Record<string, string>
+  >({})
+  const [csvLabelOverrides, setCsvLabelOverrides] = useState<
+    Record<string, string>
+  >({})
+  const [csvNodeMetadata, setCsvNodeMetadata] = useState<
+    Record<string, Record<string, string>>
+  >({})
+  // Summary info for the styling panel (headers/separator/match counts/
+  // category legend) - kept distinct from the override maps above so the
+  // panel can render its own UI without re-deriving this from the raw CSV.
+  const [nodeStyleCsvInfo, setNodeStyleCsvInfo] = useState<{
+    headers: string[]
+    separator: '\t' | ','
+    matchedNodes: number
+    unmatchedRows: number[]
+    categoryColours: Record<string, string>
+  } | null>(null)
+  // Feature B (gene track): raw parsed BED records, unfiltered - the match
+  // against the active reference path's sequenceName happens in GraphCanvas,
+  // since that's where referencePathCoordinates (and therefore which
+  // reference is even active) already lives.
+  const [geneTrackAnnotations, setGeneTrackAnnotations] = useState<
+    GeneRecord[]
+  >([])
+  const [geneTrackFileName, setGeneTrackFileName] = useState<string | null>(
+    null,
+  )
+  const [showGeneTrack, setShowGeneTrack] = useState(true)
   const [indexedGraphs, setIndexedGraphs] = useState<IndexedGraph[]>([])
   const [selectedIndexedGraph, setSelectedIndexedGraph] = useState('')
   const [localGraphOption, setLocalGraphOption] =
@@ -200,7 +237,7 @@ function App({ worker, onStopLayout }: AppProps) {
     useState<GfaidxJobProgress | null>(null)
   const gfaidxJobAbortController = useRef<AbortController | null>(null)
   const [rightPanelView, setRightPanelView] = useState<
-    'graph' | 'annotations'
+    'graph' | 'annotations' | 'styling'
   >('graph')
   const [bedAnnotations, setBedAnnotations] = useState<BedAnnotation[]>([])
   const [selectedBedAnnotation, setSelectedBedAnnotation] =
@@ -597,6 +634,16 @@ function App({ worker, onStopLayout }: AppProps) {
         setDrawPaths(false)
         setFileMenuOpen(false)
         setExamplesMenuOpen(false)
+        // Both are keyed by node identity (CSV) or reference sequence name
+        // (gene track) from the *previous* graph - carrying them over could
+        // silently mis-apply to a same-shaped but different new graph rather
+        // than just doing nothing, which is worse than clearing them.
+        setCsvColorOverrides({})
+        setCsvLabelOverrides({})
+        setCsvNodeMetadata({})
+        setNodeStyleCsvInfo(null)
+        setGeneTrackAnnotations([])
+        setGeneTrackFileName(null)
       } catch (error) {
         console.error('Failed to parse GFA:', error)
         setLoadError(
@@ -1037,6 +1084,55 @@ function App({ worker, onStopLayout }: AppProps) {
     setNodeColorOverrides({})
   }, [])
 
+  // Feature A: parses a BandageNG-compatible node styling CSV/TSV and
+  // applies it on top of the currently loaded graph. Throws (left for the
+  // panel to catch and display) rather than swallowing errors, since a
+  // silently-failed load is exactly the "coloured nothing" failure mode the
+  // spec calls out.
+  const handleLoadNodeStyleCsv = useCallback(
+    (text: string) => {
+      if (!currentGraph) {
+        throw new Error('Load a graph before loading a node styling file.')
+      }
+
+      const csv = parseNodeStyleCsv(text)
+      const result = applyNodeStyleCsv(csv, currentGraph.nodes)
+
+      setCsvColorOverrides(result.colorOverrides)
+      setCsvLabelOverrides(result.labelOverrides)
+      setCsvNodeMetadata(result.metadata)
+      setNodeStyleCsvInfo({
+        headers: csv.headers,
+        separator: csv.separator,
+        matchedNodes: result.matchedNodes,
+        unmatchedRows: result.unmatchedRows,
+        categoryColours: csv.categoryColours,
+      })
+    },
+    [currentGraph],
+  )
+
+  const handleClearNodeStyleCsv = useCallback(() => {
+    setCsvColorOverrides({})
+    setCsvLabelOverrides({})
+    setCsvNodeMetadata({})
+    setNodeStyleCsvInfo(null)
+  }, [])
+
+  // Feature B: parses a BED file for the gene track. Chrom-vs-reference
+  // matching happens later in GraphCanvas (see geneTrackAnnotations' own
+  // comment above), so this just needs valid BED syntax.
+  const handleLoadGeneTrackBed = useCallback((text: string, fileName: string) => {
+    const genes = parseGeneTrackBed(text)
+    setGeneTrackAnnotations(genes)
+    setGeneTrackFileName(fileName)
+  }, [])
+
+  const handleClearGeneTrack = useCallback(() => {
+    setGeneTrackAnnotations([])
+    setGeneTrackFileName(null)
+  }, [])
+
   const effectiveLayoutOptions = useMemo(() => {
     if (!layoutOptions.linearLayout || !layoutOptions.referencePathName) {
       return layoutOptions
@@ -1448,6 +1544,9 @@ function App({ worker, onStopLayout }: AppProps) {
             fallbackWarning={linearLayoutFallbackWarning}
             hasLayoutResult={!!layoutResult}
             isLargeGraph={isLargeGraph}
+            hasGeneTrack={geneTrackAnnotations.length > 0}
+            showGeneTrack={showGeneTrack}
+            onShowGeneTrackChange={setShowGeneTrack}
           />
         </div>
 
@@ -1473,19 +1572,58 @@ function App({ worker, onStopLayout }: AppProps) {
             >
               Annotations
             </button>
+            <button
+              type="button"
+              className={rightPanelView === 'styling' ? 'active' : undefined}
+              onClick={() => setRightPanelView('styling')}
+              role="tab"
+              aria-selected={rightPanelView === 'styling'}
+            >
+              Styling
+            </button>
           </div>
 
-          {rightPanelView === 'annotations' ? (
-            <div className="visualization-section">
-              <BedAnnotationPanel
-                annotations={bedAnnotations}
-                selectedAnnotation={selectedBedAnnotation}
-                onAnnotationsChange={handleBedAnnotationsChange}
-                onSelectAnnotation={handleSelectBedAnnotation}
-              />
-            </div>
-          ) : (
-            <div className="visualization-section">
+          {/* All three panels stay mounted and are only shown/hidden via the
+              `hidden` attribute (plain CSS display:none, no JS needed),
+              rather than swapped in/out of the tree with a ternary. Graph
+              Layout in particular holds GraphCanvas, whose pan/zoom/rotation
+              and hover/selection state - plus the expensive per-path
+              traversal memo - live in its own component instance: unmounting
+              it (as the old conditional render did) threw all of that away
+              and forced a multi-second recompute every time the user came
+              back from the Styling or Annotations tab, resetting the view to
+              its initial fit-to-screen transform even though nothing about
+              the actual layout had changed. */}
+          <div
+            className="visualization-section"
+            hidden={rightPanelView !== 'annotations'}
+          >
+            <BedAnnotationPanel
+              annotations={bedAnnotations}
+              selectedAnnotation={selectedBedAnnotation}
+              onAnnotationsChange={handleBedAnnotationsChange}
+              onSelectAnnotation={handleSelectBedAnnotation}
+            />
+          </div>
+          <div
+            className="visualization-section"
+            hidden={rightPanelView !== 'styling'}
+          >
+            <NodeStyleCsvPanel
+              hasGraph={!!currentGraph}
+              onLoadCsv={handleLoadNodeStyleCsv}
+              onClearCsv={handleClearNodeStyleCsv}
+              csvInfo={nodeStyleCsvInfo}
+              onLoadGeneTrackBed={handleLoadGeneTrackBed}
+              onClearGeneTrack={handleClearGeneTrack}
+              geneTrackFileName={geneTrackFileName}
+              geneTrackCount={geneTrackAnnotations.length}
+            />
+          </div>
+          <div
+            className="visualization-section"
+            hidden={rightPanelView !== 'graph'}
+          >
               <div className="graph-layout-header">
                 <div className="graph-layout-title">
                   <h3>Graph Layout</h3>
@@ -1586,6 +1724,10 @@ function App({ worker, onStopLayout }: AppProps) {
                     visiblePathIds={visiblePathNameSet}
                     filterToSelectedPaths={filterToSelectedPaths}
                     nodeColorOverrides={nodeColorOverrides}
+                    csvColorOverrides={csvColorOverrides}
+                    nodeLabelOverrides={csvLabelOverrides}
+                    nodeCsvMetadata={csvNodeMetadata}
+                    geneTrackAnnotations={showGeneTrack ? geneTrackAnnotations : []}
                     onUseAsStartNode={setSubgraphStartNode}
                   />
                   {/* Keep path selection close to the rendered graph so long path
@@ -1640,8 +1782,7 @@ function App({ worker, onStopLayout }: AppProps) {
                 </div>
               )}
             </div>
-          )}
-        </div>
+          </div>
       </main>
 
       {/* Hidden file input */}

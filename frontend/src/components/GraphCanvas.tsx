@@ -25,6 +25,7 @@ import {
   resolveTraversalPathName,
 } from '../utils/displayGraph'
 import { clampZoom } from '../utils/zoom'
+import { type GeneRecord, stripPanSNPrefix } from '../utils/geneTrackBed'
 
 // A point in the reference-path coordinate ruler's piecewise-linear mapping
 // between a node's world-space x position and its base-pair offset along the
@@ -36,6 +37,13 @@ interface PathCoordinateBreakpoint {
   worldX: number
   bp: number
 }
+
+// Caps how tall the gene track above the ruler can grow: beyond this many
+// overlapping genes at one screen position, the extras collapse into a
+// "+N more" indicator rather than the reserved band growing without bound.
+const MAX_GENE_TRACK_LANES = 3
+const GENE_LANE_HEIGHT = 16
+const GENE_LANE_GAP = 3
 
 function worldXToBp(
   breakpoints: PathCoordinateBreakpoint[],
@@ -56,6 +64,37 @@ function worldXToBp(
     }
   }
   return last.bp
+}
+
+// The inverse of worldXToBp, for placing gene-track boxes (which come in bp
+// coordinates) onto the screen. Unlike worldXToBp this returns null outside
+// the path's bp range rather than clamping - an off-screen gene should be
+// skipped entirely, not drawn squashed onto the end of the axis.
+//
+// Mirrors worldXToBp's structure exactly, including the b.bp === a.bp guard:
+// breakpoints come in pairs per node (see PathCoordinateBreakpoint above),
+// and the pair spanning the gap between one node's end and the next node's
+// start shares the same bp (nothing was added to cumulativeBp between them)
+// while still covering a real worldX range - a query bp landing exactly on
+// that shared value must resolve to a worldX, not divide by zero.
+function bpToWorldX(
+  breakpoints: PathCoordinateBreakpoint[],
+  bp: number,
+): number | null {
+  const first = breakpoints[0]!
+  const last = breakpoints[breakpoints.length - 1]!
+  if (bp < first.bp || bp > last.bp) return null
+
+  for (let i = 0; i + 1 < breakpoints.length; i++) {
+    const a = breakpoints[i]!
+    const b = breakpoints[i + 1]!
+    if (bp >= a.bp && bp <= b.bp) {
+      if (b.bp === a.bp) return a.worldX
+      const t = (bp - a.bp) / (b.bp - a.bp)
+      return a.worldX + t * (b.worldX - a.worldX)
+    }
+  }
+  return last.worldX
 }
 
 // "Nice numbers" axis ticking (Heckbert): picks a human-friendly step (1, 2,
@@ -111,6 +150,17 @@ interface GraphCanvasProps {
   visiblePathIds?: Set<string>
   filterToSelectedPaths?: boolean
   nodeColorOverrides?: Record<string, string>
+  // Feature A (CSV node styling). Kept as separate props from
+  // nodeColorOverrides (path-coloring) rather than pre-merged by the caller,
+  // so each source's precedence is decided in one place (see
+  // nodeColorsById below) and clearing one can never clobber the other.
+  csvColorOverrides?: Record<string, string>
+  nodeLabelOverrides?: Record<string, string>
+  nodeCsvMetadata?: Record<string, Record<string, string>>
+  // Feature B (gene track). Unfiltered - matching against the active
+  // reference path's sequence name happens inside this component, where
+  // referencePathCoordinates is already computed.
+  geneTrackAnnotations?: GeneRecord[]
   onUseAsStartNode?: (nodeId: string) => void
   debugHitboxes?: boolean // Hidden flag to visualize edge hit areas
 }
@@ -179,6 +229,10 @@ function GraphCanvasComponent({
   visiblePathIds,
   filterToSelectedPaths = false,
   nodeColorOverrides,
+  csvColorOverrides,
+  nodeLabelOverrides,
+  nodeCsvMetadata,
+  geneTrackAnnotations,
   onUseAsStartNode,
   debugHitboxes = false,
 }: GraphCanvasProps) {
@@ -201,6 +255,19 @@ function GraphCanvasComponent({
   const pendingZoomReportRef = useRef<number | null>(null)
   const [hoveredNode, setHoveredNode] = useState<string | null>(null)
   const [hoveredEdge, setHoveredEdge] = useState<number | null>(null)
+  // Feature B (gene track) hover/tooltip state. The hit rects and the band's
+  // screen-Y range are recomputed every draw() (screen-fixed, like the ruler
+  // itself) and stashed in refs rather than state, since they're consumed
+  // only by the mousemove handler below, not rendered directly.
+  const [hoveredGene, setHoveredGene] = useState<{
+    gene: GeneRecord
+    screenX: number
+    screenY: number
+  } | null>(null)
+  const geneHitRectsRef = useRef<
+    { gene: GeneRecord; x: number; y: number; width: number; height: number }[]
+  >([])
+  const geneTrackBandRef = useRef<{ top: number; bottom: number } | null>(null)
   const [selectedNode, setSelectedNode] = useState<string | null>(null)
   const [isDragging, setIsDragging] = useState(false)
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 })
@@ -277,6 +344,64 @@ function GraphCanvasComponent({
       breakpoints,
     }
   }, [graph, activeNodePositions, linearLayout, referencePathName])
+
+  // Feature B: assigns each gene BED record on the active reference sequence
+  // to a display lane, greedily by start coordinate (a gene goes in the
+  // first lane whose last occupant ends before this gene starts). This is a
+  // property of the *data* (which gene overlaps which), not the viewport, so
+  // it deliberately doesn't depend on scale/pan/zoom - only on which genes
+  // and which reference are active - and so doesn't get recomputed on every
+  // redraw while panning.
+  const geneTrackLanes = useMemo(() => {
+    if (!referencePathCoordinates || !geneTrackAnnotations?.length) {
+      return null
+    }
+
+    const sequenceName = referencePathCoordinates.sequenceName
+    if (!sequenceName) return null
+    const targetSequenceName = stripPanSNPrefix(sequenceName)
+
+    const matchingGenes = geneTrackAnnotations
+      .filter(
+        gene => stripPanSNPrefix(gene.chrom) === targetSequenceName,
+      )
+      .sort((a, b) => a.start - b.start)
+
+    if (matchingGenes.length === 0) return null
+
+    // A small fixed bp padding (rather than a pixel padding) keeps lane
+    // *assignment* independent of zoom level - which lane a gene lands in
+    // shouldn't change as the user zooms, only how wide it's drawn.
+    const LANE_PADDING_BP = 50
+    const laneEndBp: number[] = []
+    const positioned: { gene: GeneRecord; lane: number }[] = []
+    let overflowCount = 0
+
+    for (const gene of matchingGenes) {
+      let assignedLane = laneEndBp.findIndex(
+        endBp => endBp + LANE_PADDING_BP <= gene.start,
+      )
+      if (assignedLane === -1) {
+        if (laneEndBp.length < MAX_GENE_TRACK_LANES) {
+          assignedLane = laneEndBp.length
+          laneEndBp.push(gene.end)
+        } else {
+          overflowCount += 1
+          continue
+        }
+      } else {
+        laneEndBp[assignedLane] = gene.end
+      }
+      positioned.push({ gene, lane: assignedLane })
+    }
+
+    return {
+      genes: positioned,
+      laneCount: laneEndBp.length,
+      overflowCount,
+    }
+  }, [geneTrackAnnotations, referencePathCoordinates])
+
   // Topology (including the expensive per-path traversal walk) only depends
   // on the graph itself, never on a specific layout's node positions - see
   // buildDisplayGraph's own comment. Positions are layered on separately
@@ -620,7 +745,11 @@ function GraphCanvasComponent({
     const computeNodeColor = (
       node: GraphNode,
     ): [number, number, number] => {
-      const overrideColor = nodeColorOverrides?.[node.id]
+      // CSV styling wins over path-coloring on any node both cover, since
+      // loading a CSV is a deliberate, specific action on that node, versus
+      // the broader-brush "paint every node on this path" path-coloring.
+      const overrideColor =
+        csvColorOverrides?.[node.id] ?? nodeColorOverrides?.[node.id]
       if (overrideColor) {
         const normalizedColor = overrideColor.replace(/^#/, '')
         const parsedColor = Number.parseInt(normalizedColor, 16)
@@ -741,7 +870,7 @@ function GraphCanvasComponent({
     })
 
     return colors
-  }, [colorScheme, graph.nodes, nodeColorOverrides])
+  }, [colorScheme, graph.nodes, nodeColorOverrides, csvColorOverrides])
 
   const getNodeColor = useCallback(
     (node: GraphNode): [number, number, number] =>
@@ -1521,10 +1650,15 @@ function GraphCanvasComponent({
       ctx.lineWidth = isHovered ? contigThickness + 1 : contigThickness
       ctx.stroke()
 
-      // Draw node label if labels are enabled and node is long enough
+      // Draw node label if labels are enabled and node is long enough - or,
+      // regardless of length, if a CSV gave this node an explicit label
+      // override: the user asked for that label by name, so the length
+      // threshold (which exists only to stop auto-labels cluttering short
+      // nodes) shouldn't suppress it.
+      const csvLabel = nodeLabelOverrides?.[node.id]
       if (
         drawLabels &&
-        node.length >= labelLengthThreshold &&
+        (csvLabel !== undefined || node.length >= labelLengthThreshold) &&
         segments.length > 0
       ) {
         const midIdx = Math.floor(segments.length / 2)
@@ -1537,7 +1671,7 @@ function GraphCanvasComponent({
         ctx.font = '10px monospace'
         ctx.textAlign = 'center'
         ctx.textBaseline = 'bottom'
-        ctx.fillText(node.name, midPoint.x, midPoint.y - 5)
+        ctx.fillText(csvLabel ?? node.name, midPoint.x, midPoint.y - 5)
       }
     })
 
@@ -1597,12 +1731,134 @@ function GraphCanvasComponent({
         // overlap the way upright text would.
         const RULER_LABEL_ANGLE = -Math.PI / 6
 
+        // Feature B: the gene track sits directly above the ruler baseline,
+        // in the same fixed screen-space block, so it pans/zooms in lockstep
+        // with the ticks instead of needing its own positioning logic.
+        const laneCount = geneTrackLanes?.laneCount ?? 0
+        const geneTrackHeight =
+          laneCount > 0
+            ? laneCount * GENE_LANE_HEIGHT +
+              (laneCount - 1) * GENE_LANE_GAP +
+              10
+            : 0
+        const geneTrackBottom = rulerY - 6
+        const geneTrackTop = geneTrackBottom - geneTrackHeight
+
         ctx.save()
 
         // Opaque backdrop keeps labels legible over whatever graph content
-        // ends up underneath now that the ruler doesn't move with it.
+        // ends up underneath now that the ruler doesn't move with it. Grown
+        // upward (geneTrackHeight) to also cover the gene track when present.
         ctx.fillStyle = isDarkMode ? '#1a1a1a' : '#ffffff'
-        ctx.fillRect(0, rulerY - 4, width, height - (rulerY - 4))
+        ctx.fillRect(
+          0,
+          rulerY - 4 - geneTrackHeight,
+          width,
+          height - (rulerY - 4 - geneTrackHeight),
+        )
+
+        if (geneTrackLanes) {
+          geneHitRectsRef.current = []
+          geneTrackBandRef.current = { top: geneTrackTop, bottom: geneTrackBottom }
+
+          for (const { gene, lane } of geneTrackLanes.genes) {
+            const startX = bpToWorldX(breakpoints, gene.start)
+            const endX = bpToWorldX(breakpoints, gene.end)
+            if (startX === null || endX === null) continue
+
+            const screenStart = transformPoint(startX, 0).x
+            const screenEnd = transformPoint(endX, 0).x
+            const left = Math.min(screenStart, screenEnd)
+            const right = Math.max(screenStart, screenEnd)
+            // Clip to the visible canvas, same as tick labels below, so an
+            // enormous gene spanning off both edges doesn't waste a draw
+            // call on a box the user can't fully see anyway.
+            if (right < -clipMargin || left > width + clipMargin) continue
+
+            // Lane 0 sits closest to the ruler baseline.
+            const boxTop =
+              geneTrackBottom -
+              (lane + 1) * GENE_LANE_HEIGHT -
+              lane * GENE_LANE_GAP
+            const boxWidth = Math.max(right - left, 1)
+            const isHoveredGene = hoveredGene?.gene === gene
+
+            ctx.fillStyle = isHoveredGene
+              ? '#f0a500'
+              : gene.strand === '-'
+                ? '#c2554d'
+                : '#3f7fbf'
+            ctx.beginPath()
+            if (typeof ctx.roundRect === 'function') {
+              ctx.roundRect(left, boxTop, boxWidth, GENE_LANE_HEIGHT, 3)
+            } else {
+              ctx.rect(left, boxTop, boxWidth, GENE_LANE_HEIGHT)
+            }
+            ctx.fill()
+
+            geneHitRectsRef.current.push({
+              gene,
+              x: left,
+              y: boxTop,
+              width: boxWidth,
+              height: GENE_LANE_HEIGHT,
+            })
+
+            // Below ~12px there's no room for a legible arrowhead; below
+            // ~3px the box itself collapses to a bare tick so it doesn't
+            // disappear into sub-pixel rounding.
+            if (boxWidth < 3) {
+              ctx.fillRect(left, boxTop, 1, GENE_LANE_HEIGHT)
+            } else if (gene.strand && boxWidth >= 12) {
+              const arrowSize = 4
+              const arrowX = gene.strand === '+' ? right - 3 : left + 3
+              const direction = gene.strand === '+' ? 1 : -1
+              ctx.fillStyle = isDarkMode ? '#1a1a1a' : '#ffffff'
+              ctx.beginPath()
+              ctx.moveTo(arrowX - direction * arrowSize, boxTop + 2)
+              ctx.lineTo(arrowX + direction * arrowSize * 0.4, boxTop + GENE_LANE_HEIGHT / 2)
+              ctx.lineTo(arrowX - direction * arrowSize, boxTop + GENE_LANE_HEIGHT - 2)
+              ctx.closePath()
+              ctx.fill()
+            }
+
+            if (boxWidth >= 24) {
+              ctx.fillStyle = '#fff'
+              ctx.font = '10px monospace'
+              ctx.textAlign = 'center'
+              ctx.textBaseline = 'middle'
+              const label =
+                gene.name.length > 20
+                  ? `${gene.name.slice(0, 18)}…`
+                  : gene.name
+              // Only draw the name inside the box when it actually fits;
+              // otherwise it would overflow the box and overlap neighbors.
+              const textWidth = ctx.measureText(label).width
+              if (textWidth + 6 <= boxWidth) {
+                ctx.fillText(label, (left + right) / 2, boxTop + GENE_LANE_HEIGHT / 2)
+              } else {
+                ctx.fillStyle = isDarkMode ? '#ccc' : '#333'
+                ctx.textAlign = 'left'
+                ctx.fillText(label, right + 3, boxTop + GENE_LANE_HEIGHT / 2)
+              }
+            }
+          }
+
+          if (geneTrackLanes.overflowCount > 0) {
+            ctx.fillStyle = isDarkMode ? '#ccc' : '#333'
+            ctx.font = '10px monospace'
+            ctx.textAlign = 'left'
+            ctx.textBaseline = 'top'
+            ctx.fillText(
+              `+${geneTrackLanes.overflowCount} more`,
+              6,
+              geneTrackTop,
+            )
+          }
+        } else {
+          geneHitRectsRef.current = []
+          geneTrackBandRef.current = null
+        }
 
         ctx.strokeStyle = isDarkMode ? '#888' : '#555'
         ctx.fillStyle = isDarkMode ? '#ccc' : '#333'
@@ -1695,9 +1951,12 @@ function GraphCanvasComponent({
     connectorThickness,
     drawLabels,
     labelLengthThreshold,
+    nodeLabelOverrides,
     drawPaths,
     visiblePathIds,
     referencePathCoordinates,
+    geneTrackLanes,
+    hoveredGene,
   ])
 
   // Keep the latest draw() closure available to the rAF callback below,
@@ -1900,6 +2159,16 @@ function GraphCanvasComponent({
         setDragStart({ x: e.clientX, y: e.clientY })
         setContextMenu({ visible: false, x: 0, y: 0, nodeId: null })
 
+        // Gene track click: "select" per the spec is deliberately minimal
+        // for now (logging), since this is explicitly a secondary feature
+        // on top of the static track ("do this only after the static track
+        // renders correctly"). Returning early also keeps a gene click from
+        // also starting a pan, since the track sits over the same canvas.
+        if (hoveredGene) {
+          console.log('Gene selected:', hoveredGene.gene)
+          return
+        }
+
         if (hoveredNode) {
           // Prepare for node dragging
           setDraggingNodeId(hoveredNode)
@@ -1911,7 +2180,7 @@ function GraphCanvasComponent({
         }
       }
     },
-    [hoveredNode],
+    [hoveredNode, hoveredGene],
   )
 
   // Handle mouse move
@@ -1983,6 +2252,28 @@ function GraphCanvasComponent({
 
         setDragStart({ x: e.clientX, y: e.clientY })
       } else {
+        // Gene track hit-testing happens first and in plain screen space
+        // (the track is a fixed overlay, not part of the rotated/zoomed
+        // graph) - mouseY alone decides whether the pointer is even in that
+        // band before scanning the handful of rects drawn there this frame.
+        const geneBand = geneTrackBandRef.current
+        if (geneBand && mouseY >= geneBand.top && mouseY <= geneBand.bottom) {
+          const hit = geneHitRectsRef.current.find(
+            rect =>
+              mouseX >= rect.x &&
+              mouseX <= rect.x + rect.width &&
+              mouseY >= rect.y &&
+              mouseY <= rect.y + rect.height,
+          )
+          setHoveredGene(
+            hit ? { gene: hit.gene, screenX: e.clientX, screenY: e.clientY } : null,
+          )
+          if (hoveredNode) setHoveredNode(null)
+          if (hoveredEdge !== null) setHoveredEdge(null)
+          return
+        }
+        if (hoveredGene) setHoveredGene(null)
+
         // Hit detection for hover
         const { scale, rotation, translateX, translateY } = transform
         const translatedMouseX = mouseX - translateX
@@ -2277,6 +2568,9 @@ function GraphCanvasComponent({
       getVisiblePathTraversals,
       getEdgeOffsetNormal,
       getEdgeOffset,
+      hoveredGene,
+      hoveredNode,
+      hoveredEdge,
     ],
   )
 
@@ -2561,6 +2855,32 @@ function GraphCanvasComponent({
                       </div>
                     </div>
                   )}
+                  {/* Feature A: any extra columns from a loaded node styling
+                      CSV (everything besides the name/colour/label columns). */}
+                  {nodeCsvMetadata?.[node.id] &&
+                    Object.keys(nodeCsvMetadata[node.id]!).length > 0 && (
+                      <div>
+                        <strong>CSV Metadata:</strong>
+                        <div
+                          style={{
+                            marginTop: '4px',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: '2px',
+                            fontSize: '12px',
+                            wordBreak: 'break-all',
+                          }}
+                        >
+                          {Object.entries(nodeCsvMetadata[node.id]!).map(
+                            ([column, value]) => (
+                              <div key={column}>
+                                {column}: {value}
+                              </div>
+                            ),
+                          )}
+                        </div>
+                      </div>
+                    )}
                 </div>
               </div>
             </div>
@@ -2753,6 +3073,44 @@ function GraphCanvasComponent({
             </div>
           )
         })()}
+
+      {/* Tooltip for the gene track (Feature B). A plain fixed-position div
+          rather than the shared floating-ui instance above: the track only
+          ever occupies the bottom screen-space band, so there's no need for
+          floating-ui's flip/shift collision handling to keep it on screen -
+          placing it just above the cursor is always safe here. */}
+      {hoveredGene && (
+        <div
+          style={{
+            position: 'fixed',
+            left: hoveredGene.screenX,
+            top: hoveredGene.screenY,
+            transform: 'translate(-50%, -100%)',
+            marginTop: -10,
+            background: isDarkMode ? '#2a2a2a' : 'white',
+            border: isDarkMode ? '1px solid #555' : '1px solid #ccc',
+            borderRadius: '6px',
+            padding: '8px 12px',
+            fontSize: '13px',
+            boxShadow: '0 2px 10px rgba(0,0,0,0.3)',
+            zIndex: 1000,
+            pointerEvents: 'none',
+            whiteSpace: 'nowrap',
+            color: isDarkMode ? '#fff' : '#000',
+          }}
+        >
+          <div>
+            <strong>{hoveredGene.gene.name}</strong>
+          </div>
+          <div style={{ fontSize: '11px', opacity: 0.8 }}>
+            {hoveredGene.gene.chrom}:{hoveredGene.gene.start.toLocaleString()}-
+            {hoveredGene.gene.end.toLocaleString()} (
+            {(hoveredGene.gene.end - hoveredGene.gene.start).toLocaleString()}{' '}
+            bp)
+            {hoveredGene.gene.strand && ` - strand ${hoveredGene.gene.strand}`}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
