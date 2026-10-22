@@ -176,6 +176,11 @@ function App({ worker, onStopLayout }: AppProps) {
   // Keep path visibility in the React layer so toggling paths never requires
   // recomputing the layout itself.
   const [selectedPathNames, setSelectedPathNames] = useState<string[]>([])
+  // Feature C: paths toggled in the Paths legend to show a copy-number
+  // track for, under the linear-layout ruler. Independent of
+  // selectedPathNames (which drives path-colored edge overlays) since a
+  // user may want the CN chart for a path without also drawing its edges.
+  const [copyNumberPathNames, setCopyNumberPathNames] = useState<string[]>([])
   const [filterToSelectedPaths, setFilterToSelectedPaths] = useState(false)
   const [nodeColorOverrides, setNodeColorOverrides] = useState<
     Record<string, string>
@@ -1007,6 +1012,7 @@ function App({ worker, onStopLayout }: AppProps) {
 
     if (!currentGraph?.paths) {
       setSelectedPathNames([])
+      setCopyNumberPathNames([])
       setNodeColorOverrides({})
       return
     }
@@ -1014,6 +1020,14 @@ function App({ worker, onStopLayout }: AppProps) {
     const availablePathNames = new Set(currentGraph.paths.map(path => path.name))
     setSelectedPathNames(currentSelected =>
       currentSelected.filter(pathName => availablePathNames.has(pathName)),
+    )
+    // Same reasoning as selectedPathNames above: a toggled-on copy-number
+    // path name from a previous graph almost never matches a name in a new
+    // one, so filtering by availability and blind-clearing come to nearly
+    // the same result - filtering is just the one consistent pattern that's
+    // also correct for the edge case of reloading the same graph.
+    setCopyNumberPathNames(current =>
+      current.filter(pathName => availablePathNames.has(pathName)),
     )
     setNodeColorOverrides({})
   }, [currentGraph])
@@ -1082,6 +1096,16 @@ function App({ worker, onStopLayout }: AppProps) {
 
   const handleClearPathNodeColors = useCallback(() => {
     setNodeColorOverrides({})
+  }, [])
+
+  // Feature C: toggles whether a path's copy-number track is shown under the
+  // linear-layout ruler.
+  const handleToggleCopyNumberPath = useCallback((pathName: string) => {
+    setCopyNumberPathNames(current =>
+      current.includes(pathName)
+        ? current.filter(name => name !== pathName)
+        : [...current, pathName],
+    )
   }, [])
 
   // Feature A: parses a BandageNG-compatible node styling CSV/TSV and
@@ -1728,6 +1752,7 @@ function App({ worker, onStopLayout }: AppProps) {
                     nodeLabelOverrides={csvLabelOverrides}
                     nodeCsvMetadata={csvNodeMetadata}
                     geneTrackAnnotations={showGeneTrack ? geneTrackAnnotations : []}
+                    copyNumberPathNames={copyNumberPathNames}
                     onUseAsStartNode={setSubgraphStartNode}
                   />
                   {/* Keep path selection close to the rendered graph so long path
@@ -1756,6 +1781,12 @@ function App({ worker, onStopLayout }: AppProps) {
                         onFilterToSelectedPathsChange={setFilterToSelectedPaths}
                         onColorPathNodes={handleColorPathNodes}
                         onClearNodeColors={handleClearPathNodeColors}
+                        copyNumberPathNames={copyNumberPathNames}
+                        onToggleCopyNumberPath={handleToggleCopyNumberPath}
+                        hasCopyNumberTrack={
+                          !!appliedLayoutOptions?.linearLayout &&
+                          !!appliedLayoutOptions?.referencePathName
+                        }
                       />
                     )}
                 </>

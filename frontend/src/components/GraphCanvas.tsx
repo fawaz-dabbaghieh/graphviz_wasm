@@ -45,6 +45,33 @@ const MAX_GENE_TRACK_LANES = 3
 const GENE_LANE_HEIGHT = 16
 const GENE_LANE_GAP = 3
 
+// One backbone (reference/linear-layout path) node's position in the ruler's
+// bp coordinate system, plus its bare segment name - the join key used to
+// look up how many times some *other* path revisits this same node (see the
+// copy-number track below).
+interface BackboneNodeSpan {
+  bareName: string
+  bpStart: number
+  bpEnd: number
+}
+
+// Feature C: a "copy number" track showing, for a user-chosen path, how many
+// times it revisits each part of the backbone's own coordinate space -
+// local amplification (a path visiting a backbone node repeatedly, e.g. a
+// tandem duplication collapsed onto one shared node by graph construction)
+// shows up as a plateau above 1 right where it happens on the ruler.
+//
+// The bin width is a fixed fraction of the backbone's total bp span, not a
+// fixed bp size - so resolution (always ~100 points) scales automatically
+// with whatever region is loaded, rather than needing a per-graph bp window
+// the user would otherwise have to tune by hand.
+const COPY_NUMBER_BIN_FRACTION = 0.01
+const COPY_NUMBER_BIN_COUNT = Math.round(1 / COPY_NUMBER_BIN_FRACTION)
+const COPY_NUMBER_TRACK_HEIGHT = 60
+// Vertical gap between adjacent bands in the reserved bottom strip (e.g.
+// between the gene track and the copy-number chart, when both are present).
+const BAND_GAP = 8
+
 function worldXToBp(
   breakpoints: PathCoordinateBreakpoint[],
   worldX: number,
@@ -95,6 +122,72 @@ function bpToWorldX(
     }
   }
   return last.worldX
+}
+
+export interface CopyNumberTrackData {
+  firstBp: number
+  binSizeBp: number
+  binCount: number
+  // null = no backbone coverage landed in this bin at all (shouldn't happen
+  // in practice since backbone nodes tile the bp range with no gaps, but
+  // guarded rather than assumed).
+  tracks: Map<string, (number | null)[]>
+}
+
+// Bins a path's per-node occurrence counts (relative to the backbone node
+// they share a bare segment name with) into COPY_NUMBER_BIN_COUNT equal-bp-
+// width bins across the backbone's full span - a length-weighted pileup,
+// the same technique used to turn a set of (possibly node-length-mismatched)
+// intervals into a fixed-resolution coverage/bedgraph-style track. Weighting
+// by the overlap length between each backbone node and each bin it touches
+// (rather than one count per bin naively) keeps the result correct when a
+// single long node spans multiple bins, or many short nodes share one bin.
+function computeCopyNumberBins(
+  backboneNodeSpans: BackboneNodeSpan[],
+  queryNodeCounts: Map<string, number>,
+  binCount: number,
+): (number | null)[] | null {
+  if (backboneNodeSpans.length === 0) return null
+
+  const firstBp = backboneNodeSpans[0]!.bpStart
+  const lastBp = backboneNodeSpans[backboneNodeSpans.length - 1]!.bpEnd
+  const totalSpan = lastBp - firstBp
+  if (totalSpan <= 0) return null
+
+  const binSize = totalSpan / binCount
+  const weightedSums = new Array<number>(binCount).fill(0)
+  const coveredLengths = new Array<number>(binCount).fill(0)
+
+  for (const span of backboneNodeSpans) {
+    if (span.bpEnd <= span.bpStart) continue
+    // A node absent from the query path entirely (e.g. a true deletion, or
+    // just a different allele through an ordinary SNP/indel bubble at this
+    // position) contributes 0, not "no data" - 0 is itself informative here.
+    const count = queryNodeCounts.get(span.bareName) ?? 0
+
+    let binIndex = Math.max(
+      0,
+      Math.floor((span.bpStart - firstBp) / binSize),
+    )
+    while (binIndex < binCount) {
+      const binStart = firstBp + binIndex * binSize
+      const binEnd = binStart + binSize
+      const overlapStart = Math.max(span.bpStart, binStart)
+      const overlapEnd = Math.min(span.bpEnd, binEnd)
+      if (overlapEnd <= overlapStart) break
+
+      const overlapLength = overlapEnd - overlapStart
+      weightedSums[binIndex]! += count * overlapLength
+      coveredLengths[binIndex]! += overlapLength
+
+      if (overlapEnd >= span.bpEnd) break
+      binIndex++
+    }
+  }
+
+  return weightedSums.map((sum, i) =>
+    coveredLengths[i]! > 0 ? sum / coveredLengths[i]! : null,
+  )
 }
 
 // "Nice numbers" axis ticking (Heckbert): picks a human-friendly step (1, 2,
@@ -161,6 +254,9 @@ interface GraphCanvasProps {
   // reference path's sequence name happens inside this component, where
   // referencePathCoordinates is already computed.
   geneTrackAnnotations?: GeneRecord[]
+  // Feature C (copy-number track): names of paths the user has toggled on in
+  // the Paths legend, each drawn as its own colored line.
+  copyNumberPathNames?: string[]
   onUseAsStartNode?: (nodeId: string) => void
   debugHitboxes?: boolean // Hidden flag to visualize edge hit areas
 }
@@ -233,6 +329,7 @@ function GraphCanvasComponent({
   nodeLabelOverrides,
   nodeCsvMetadata,
   geneTrackAnnotations,
+  copyNumberPathNames,
   onUseAsStartNode,
   debugHitboxes = false,
 }: GraphCanvasProps) {
@@ -268,6 +365,22 @@ function GraphCanvasComponent({
     { gene: GeneRecord; x: number; y: number; width: number; height: number }[]
   >([])
   const geneTrackBandRef = useRef<{ top: number; bottom: number } | null>(null)
+  // Feature C (copy-number track) hover state. Like the gene track's refs
+  // above, the band's screen-space extent and each bin's screen-x position
+  // are recomputed every draw() and stashed here so handleMouseMove can do a
+  // cheap nearest-bin lookup without redoing any bp->world->screen math of
+  // its own.
+  const [hoveredCopyNumberBin, setHoveredCopyNumberBin] = useState<{
+    binIndex: number
+    screenX: number
+    screenY: number
+  } | null>(null)
+  const copyNumberBandRef = useRef<{ top: number; bottom: number } | null>(
+    null,
+  )
+  const copyNumberBinPositionsRef = useRef<
+    { binIndex: number; screenX: number }[]
+  >([])
   const [selectedNode, setSelectedNode] = useState<string | null>(null)
   const [isDragging, setIsDragging] = useState(false)
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 })
@@ -317,6 +430,14 @@ function GraphCanvasComponent({
     let cumulativeBp = Number.isFinite(parsedStart) ? parsedStart : 0
 
     const breakpoints: PathCoordinateBreakpoint[] = []
+    // Feature C (copy-number track): one entry per backbone node, carrying
+    // its bare (orientation-stripped) segment name alongside the same bp
+    // span used above. A repeat-free reference path (the only kind allowed
+    // as a linear-layout backbone - see pathHasRepeatedSegments) visits each
+    // bare name at most once, so this is an unambiguous node -> bp-position
+    // lookup table for projecting any other path's node-occurrence counts
+    // onto the ruler's coordinate system.
+    const backboneNodeSpans: BackboneNodeSpan[] = []
 
     for (const nodeId of path.nodeIds) {
       const segments = activeNodePositions[nodeId]
@@ -330,9 +451,15 @@ function GraphCanvasComponent({
         segMaxX = Math.max(segMaxX, segment.x)
       }
 
+      const bpStart = cumulativeBp
       breakpoints.push({ worldX: segMinX, bp: cumulativeBp })
       cumulativeBp += node.length
       breakpoints.push({ worldX: segMaxX, bp: cumulativeBp })
+      backboneNodeSpans.push({
+        bareName: stripNodeOrientation(nodeId),
+        bpStart,
+        bpEnd: cumulativeBp,
+      })
     }
 
     if (breakpoints.length < 2) return null
@@ -342,6 +469,7 @@ function GraphCanvasComponent({
       minWorldX: breakpoints[0]!.worldX,
       maxWorldX: breakpoints[breakpoints.length - 1]!.worldX,
       breakpoints,
+      backboneNodeSpans,
     }
   }, [graph, activeNodePositions, linearLayout, referencePathName])
 
@@ -401,6 +529,52 @@ function GraphCanvasComponent({
       overflowCount,
     }
   }, [geneTrackAnnotations, referencePathCoordinates])
+
+  // Feature C: for each path the user has toggled on in the Paths legend,
+  // counts how many times it visits each backbone node (by bare segment
+  // name, so an inverted repeat copy still counts), then bins those counts
+  // across the backbone's bp span. Deliberately independent of pan/zoom/
+  // transform - like geneTrackLanes above, this is a property of the graph
+  // and the current toggle selection, not the viewport, so it doesn't
+  // recompute on every redraw while panning.
+  const copyNumberTracks = useMemo((): CopyNumberTrackData | null => {
+    if (!referencePathCoordinates || !copyNumberPathNames?.length) return null
+
+    const { backboneNodeSpans } = referencePathCoordinates
+    if (backboneNodeSpans.length === 0) return null
+
+    const tracks = new Map<string, (number | null)[]>()
+
+    for (const pathName of copyNumberPathNames) {
+      const queryPath = graph.paths?.find(p => p.name === pathName)
+      if (!queryPath) continue
+
+      const queryNodeCounts = new Map<string, number>()
+      for (const nodeId of queryPath.nodeIds) {
+        const bareName = stripNodeOrientation(nodeId)
+        queryNodeCounts.set(bareName, (queryNodeCounts.get(bareName) ?? 0) + 1)
+      }
+
+      const bins = computeCopyNumberBins(
+        backboneNodeSpans,
+        queryNodeCounts,
+        COPY_NUMBER_BIN_COUNT,
+      )
+      if (bins) tracks.set(pathName, bins)
+    }
+
+    if (tracks.size === 0) return null
+
+    const firstBp = backboneNodeSpans[0]!.bpStart
+    const lastBp = backboneNodeSpans[backboneNodeSpans.length - 1]!.bpEnd
+
+    return {
+      firstBp,
+      binSizeBp: (lastBp - firstBp) / COPY_NUMBER_BIN_COUNT,
+      binCount: COPY_NUMBER_BIN_COUNT,
+      tracks,
+    }
+  }, [graph.paths, referencePathCoordinates, copyNumberPathNames])
 
   // Topology (including the expensive per-path traversal walk) only depends
   // on the graph itself, never on a specific layout's node positions - see
@@ -1744,17 +1918,35 @@ function GraphCanvasComponent({
         const geneTrackBottom = rulerY - 6
         const geneTrackTop = geneTrackBottom - geneTrackHeight
 
+        // Feature C: the copy-number chart stacks above the gene track (or
+        // directly above the ruler if there's no gene track), in the same
+        // screen-fixed band, for the same reason - it pans/zooms with the
+        // ticks instead of needing independent positioning.
+        const copyNumberHeight =
+          copyNumberTracks && copyNumberTracks.tracks.size > 0
+            ? COPY_NUMBER_TRACK_HEIGHT
+            : 0
+        const copyNumberBottom =
+          copyNumberHeight > 0
+            ? geneTrackHeight > 0
+              ? geneTrackTop - BAND_GAP
+              : geneTrackBottom
+            : geneTrackTop
+        const copyNumberTop = copyNumberBottom - copyNumberHeight
+        const reservedBandTop = copyNumberHeight > 0 ? copyNumberTop : geneTrackTop
+
         ctx.save()
 
         // Opaque backdrop keeps labels legible over whatever graph content
         // ends up underneath now that the ruler doesn't move with it. Grown
-        // upward (geneTrackHeight) to also cover the gene track when present.
+        // upward to cover the gene track and/or copy-number chart whenever
+        // either is present.
         ctx.fillStyle = isDarkMode ? '#1a1a1a' : '#ffffff'
         ctx.fillRect(
           0,
-          rulerY - 4 - geneTrackHeight,
+          reservedBandTop - 4,
           width,
-          height - (rulerY - 4 - geneTrackHeight),
+          height - (reservedBandTop - 4),
         )
 
         if (geneTrackLanes) {
@@ -1860,6 +2052,103 @@ function GraphCanvasComponent({
           geneTrackBandRef.current = null
         }
 
+        // Feature C: one colored line per toggled path, sharing a single
+        // y-scale so amplification in one haplotype is visually comparable
+        // to another, not just internally consistent on its own axis.
+        if (copyNumberTracks && copyNumberTracks.tracks.size > 0) {
+          copyNumberBandRef.current = { top: copyNumberTop, bottom: copyNumberBottom }
+
+          // Bin -> screen-x only depends on the backbone's coordinate space
+          // and the current pan/zoom, not on which path's value is being
+          // plotted - computed once and shared by every path's line below,
+          // and stashed in a ref so handleMouseMove can do a cheap nearest-
+          // bin lookup without redoing this bp->world->screen conversion
+          // itself (mirrors how geneHitRectsRef avoids re-deriving screen
+          // positions outside of draw()).
+          const binScreenPositions: { binIndex: number; screenX: number }[] =
+            []
+          for (let i = 0; i < copyNumberTracks.binCount; i++) {
+            const binCenterBp =
+              copyNumberTracks.firstBp +
+              (i + 0.5) * copyNumberTracks.binSizeBp
+            const worldX = bpToWorldX(breakpoints, binCenterBp)
+            if (worldX === null) continue
+            binScreenPositions.push({
+              binIndex: i,
+              screenX: transformPoint(worldX, 0).x,
+            })
+          }
+          copyNumberBinPositionsRef.current = binScreenPositions
+
+          let maxValue = 1
+          for (const bins of copyNumberTracks.tracks.values()) {
+            for (const value of bins) {
+              if (value !== null) maxValue = Math.max(maxValue, value)
+            }
+          }
+          maxValue = Math.ceil(maxValue)
+
+          const valueToScreenY = (value: number) =>
+            copyNumberBottom -
+            (value / maxValue) * (copyNumberBottom - copyNumberTop)
+
+          // A dashed reference line at copy number 1 - the backbone's own
+          // implicit baseline, since a repeat-free reference trivially
+          // visits every one of its own nodes exactly once - makes it easy
+          // to see at a glance which bins are amplified relative to normal
+          // rather than having to read the axis labels for every point.
+          const baselineY = valueToScreenY(1)
+          ctx.save()
+          ctx.strokeStyle = isDarkMode ? '#555' : '#ccc'
+          ctx.lineWidth = 1
+          ctx.setLineDash([3, 3])
+          ctx.beginPath()
+          ctx.moveTo(0, baselineY)
+          ctx.lineTo(width, baselineY)
+          ctx.stroke()
+          ctx.restore()
+
+          ctx.fillStyle = isDarkMode ? '#888' : '#666'
+          ctx.font = '10px monospace'
+          ctx.textAlign = 'right'
+          ctx.textBaseline = 'middle'
+          ctx.fillText('0', 26, copyNumberBottom)
+          ctx.fillText('1', 26, baselineY)
+          if (maxValue > 1) {
+            ctx.fillText(String(maxValue), 26, copyNumberTop + 5)
+          }
+
+          for (const [pathName, bins] of copyNumberTracks.tracks) {
+            ctx.strokeStyle = getPathColor(pathName)
+            ctx.lineWidth = 2
+            ctx.beginPath()
+            // A null bin (no backbone coverage - shouldn't normally happen,
+            // but guarded in computeCopyNumberBins) breaks the line rather
+            // than interpolating through a gap with no real data.
+            let penDown = false
+
+            for (const { binIndex, screenX } of binScreenPositions) {
+              const value = bins[binIndex]
+              if (value === null) {
+                penDown = false
+                continue
+              }
+
+              const screenY = valueToScreenY(value)
+              if (!penDown) {
+                ctx.moveTo(screenX, screenY)
+                penDown = true
+              } else {
+                ctx.lineTo(screenX, screenY)
+              }
+            }
+            ctx.stroke()
+          }
+        } else {
+          copyNumberBandRef.current = null
+          copyNumberBinPositionsRef.current = []
+        }
+
         ctx.strokeStyle = isDarkMode ? '#888' : '#555'
         ctx.fillStyle = isDarkMode ? '#ccc' : '#333'
         ctx.font = '13px monospace'
@@ -1928,6 +2217,16 @@ function GraphCanvasComponent({
 
         ctx.restore()
       }
+    } else {
+      // No reference path selected (or linear layout off) - nothing is
+      // drawn in the bottom band this frame, so any hit-test region left
+      // over from an earlier frame that did have one must be cleared too,
+      // otherwise handleMouseMove could keep intercepting hover in empty
+      // space as if the gene/copy-number bands were still there.
+      geneTrackBandRef.current = null
+      geneHitRectsRef.current = []
+      copyNumberBandRef.current = null
+      copyNumberBinPositionsRef.current = []
     }
   }, [
     layoutResult,
@@ -1957,6 +2256,8 @@ function GraphCanvasComponent({
     referencePathCoordinates,
     geneTrackLanes,
     hoveredGene,
+    copyNumberTracks,
+    getPathColor,
   ])
 
   // Keep the latest draw() closure available to the rAF callback below,
@@ -2252,6 +2553,45 @@ function GraphCanvasComponent({
 
         setDragStart({ x: e.clientX, y: e.clientY })
       } else {
+        // Copy-number band hit-testing: like the gene track below, this is a
+        // fixed screen-space overlay, so mouseY alone decides whether the
+        // pointer is even in the band before finding the nearest bin by x.
+        const copyNumberBand = copyNumberBandRef.current
+        if (
+          copyNumberBand &&
+          mouseY >= copyNumberBand.top &&
+          mouseY <= copyNumberBand.bottom
+        ) {
+          const positions = copyNumberBinPositionsRef.current
+          let nearest: { binIndex: number; screenX: number } | null = null
+          let nearestDistance = Infinity
+          for (const position of positions) {
+            const distance = Math.abs(position.screenX - mouseX)
+            if (distance < nearestDistance) {
+              nearestDistance = distance
+              nearest = position
+            }
+          }
+          // A generous threshold (half the nominal bin width in a typical
+          // 1200px-wide canvas) avoids a tooltip appearing far from any
+          // actual plotted point when the cursor is over the band but not
+          // near a line.
+          const hit = nearest && nearestDistance < width / COPY_NUMBER_BIN_COUNT
+          setHoveredCopyNumberBin(
+            hit
+              ? {
+                  binIndex: nearest!.binIndex,
+                  screenX: e.clientX,
+                  screenY: e.clientY,
+                }
+              : null,
+          )
+          if (hoveredNode) setHoveredNode(null)
+          if (hoveredEdge !== null) setHoveredEdge(null)
+          return
+        }
+        if (hoveredCopyNumberBin) setHoveredCopyNumberBin(null)
+
         // Gene track hit-testing happens first and in plain screen space
         // (the track is a fixed overlay, not part of the rotated/zoomed
         // graph) - mouseY alone decides whether the pointer is even in that
@@ -2571,6 +2911,7 @@ function GraphCanvasComponent({
       hoveredGene,
       hoveredNode,
       hoveredEdge,
+      hoveredCopyNumberBin,
     ],
   )
 
@@ -3109,6 +3450,73 @@ function GraphCanvasComponent({
             bp)
             {hoveredGene.gene.strand && ` - strand ${hoveredGene.gene.strand}`}
           </div>
+        </div>
+      )}
+
+      {/* Tooltip for the copy-number track (Feature C). Lists every currently
+          toggled path's value at the hovered bin, not just whichever line
+          happens to be closest in y - with several paths potentially
+          overlapping at the same bin, showing all of them is more useful
+          than guessing which one the user meant to hover. */}
+      {hoveredCopyNumberBin && copyNumberTracks && (
+        <div
+          style={{
+            position: 'fixed',
+            left: hoveredCopyNumberBin.screenX,
+            top: hoveredCopyNumberBin.screenY,
+            transform: 'translate(-50%, -100%)',
+            marginTop: -10,
+            background: isDarkMode ? '#2a2a2a' : 'white',
+            border: isDarkMode ? '1px solid #555' : '1px solid #ccc',
+            borderRadius: '6px',
+            padding: '8px 12px',
+            fontSize: '13px',
+            boxShadow: '0 2px 10px rgba(0,0,0,0.3)',
+            zIndex: 1000,
+            pointerEvents: 'none',
+            whiteSpace: 'nowrap',
+            color: isDarkMode ? '#fff' : '#000',
+          }}
+        >
+          <div style={{ fontSize: '11px', opacity: 0.8, marginBottom: 4 }}>
+            {Math.round(
+              copyNumberTracks.firstBp +
+                hoveredCopyNumberBin.binIndex * copyNumberTracks.binSizeBp,
+            ).toLocaleString()}
+            {' - '}
+            {Math.round(
+              copyNumberTracks.firstBp +
+                (hoveredCopyNumberBin.binIndex + 1) *
+                  copyNumberTracks.binSizeBp,
+            ).toLocaleString()}
+          </div>
+          {Array.from(copyNumberTracks.tracks, ([pathName, bins]) => {
+            const value = bins[hoveredCopyNumberBin.binIndex]
+            if (value === null) return null
+            return (
+              <div
+                key={pathName}
+                style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+              >
+                <span
+                  style={{
+                    display: 'inline-block',
+                    width: 10,
+                    height: 10,
+                    borderRadius: '50%',
+                    background: getPathColor(pathName),
+                    flexShrink: 0,
+                  }}
+                />
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {pathName}
+                </span>
+                <strong style={{ marginLeft: 'auto' }}>
+                  {value.toFixed(1)}×
+                </strong>
+              </div>
+            )
+          })}
         </div>
       )}
     </div>
