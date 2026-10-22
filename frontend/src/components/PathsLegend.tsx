@@ -13,6 +13,16 @@ interface PathsLegendProps {
   onFilterToSelectedPathsChange: (enabled: boolean) => void
   onColorPathNodes: (pathName: string, color: string) => number
   onClearNodeColors: () => void
+  // Feature C: which paths currently have a copy-number track drawn under
+  // the ruler, and the toggle for it - independent of path selection/
+  // coloring above, since a path's CN track is useful on its own.
+  copyNumberPathNames: string[]
+  onToggleCopyNumberPath: (pathName: string) => void
+  // Linear layout + a reference path must be active for the track to mean
+  // anything (it's drawn relative to the ruler's bp coordinate space) - the
+  // toggle button stays visible but disabled otherwise, rather than hidden,
+  // so it's discoverable.
+  hasCopyNumberTrack: boolean
 }
 
 interface ColorFeedback {
@@ -50,7 +60,11 @@ export function PathsLegend({
   onFilterToSelectedPathsChange,
   onColorPathNodes,
   onClearNodeColors,
+  copyNumberPathNames,
+  onToggleCopyNumberPath,
+  hasCopyNumberTrack,
 }: PathsLegendProps) {
+  const copyNumberPathNameSet = new Set(copyNumberPathNames)
   const [searchQuery, setSearchQuery] = useState('')
   const [activeColorPathName, setActiveColorPathName] = useState<string | null>(
     null,
@@ -130,9 +144,21 @@ export function PathsLegend({
           fontWeight: 'bold',
           marginBottom: '8px',
           color: isDarkMode ? '#e0e0e0' : '#333',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '6px',
         }}
       >
         Paths
+        <HelpIcon
+          text={
+            '"Color" paints the nodes a path traverses. "Copy #" draws a ' +
+            "chart under the ruler showing how many times that path revisits " +
+            'each part of the reference backbone - a value above 1 means a ' +
+            'local duplication/repeat relative to the backbone. Requires ' +
+            'Linear Layout with a reference path selected.'
+          }
+        />
       </div>
       {/* Large path sets are easier to work with when the panel can be filtered
           independently of the graph rendering state. */}
@@ -344,6 +370,44 @@ export function PathsLegend({
                 }}
               >
                 Color
+              </button>
+              <button
+                type="button"
+                onClick={event => {
+                  event.preventDefault()
+                  onToggleCopyNumberPath(path.name)
+                }}
+                disabled={!hasCopyNumberTrack}
+                title={
+                  hasCopyNumberTrack
+                    ? 'Show/hide a copy-number track for this path under the ruler'
+                    : 'Enable Linear Layout with a reference path first'
+                }
+                style={{
+                  padding: '3px 7px',
+                  borderRadius: '4px',
+                  border: copyNumberPathNameSet.has(path.name)
+                    ? `1px solid ${pathColors[idx]}`
+                    : isDarkMode
+                      ? '1px solid #555'
+                      : '1px solid #ccc',
+                  background: copyNumberPathNameSet.has(path.name)
+                    ? pathColors[idx]
+                    : isDarkMode
+                      ? '#3a3a3a'
+                      : '#fff',
+                  color: copyNumberPathNameSet.has(path.name)
+                    ? '#fff'
+                    : isDarkMode
+                      ? '#e0e0e0'
+                      : '#333',
+                  cursor: hasCopyNumberTrack ? 'pointer' : 'not-allowed',
+                  opacity: hasCopyNumberTrack ? 1 : 0.5,
+                  fontSize: '11px',
+                  flexShrink: 0,
+                }}
+              >
+                Copy #
               </button>
             </label>
             {path.walk && (
