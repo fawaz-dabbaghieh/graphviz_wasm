@@ -1344,7 +1344,7 @@ function App({ worker, onStopLayout }: AppProps) {
       )}
       <header className="app-header">
         <div className="header-top">
-          <h1>BandageJS</h1>
+          <h1>gfaidx-viz</h1>
           <div className="menu-bar">
             <div className="menu-item">
               <button
