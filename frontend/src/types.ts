@@ -70,7 +70,10 @@ export interface RegionPath {
   haplotype: string
   sequence: string
   start: number
-  end: number
+  // null when gfaidx can't determine the path's length (e.g. a pggb P-line
+  // with no .cdx coordinate index) - the backend still lists the path since
+  // it's queryable on the fly, just without a known upper bound.
+  end: number | null
   entries: number
   label: string
 }
