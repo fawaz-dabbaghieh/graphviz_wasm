@@ -524,7 +524,9 @@ export function GraphExtractionControls({
                       <div className="control-hint">
                         Available interval: {selectedRegionPath.start.toLocaleString()}
                         {' - '}
-                        {selectedRegionPath.end.toLocaleString()}
+                        {selectedRegionPath.end === null
+                          ? 'unknown (length not indexed - enter an end coordinate manually)'
+                          : selectedRegionPath.end.toLocaleString()}
                       </div>
                     ) : (
                       <div className="control-hint">

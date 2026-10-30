@@ -92,6 +92,12 @@ const BETA_BANNER_VERSION = '1'
 // with a desktop tool instead.
 const LARGE_GRAPH_NODE_WARNING_THRESHOLD = 50000
 
+// Matches the Go backend's gfaidxMaxNodes cap (gfaidx 2.1.0+): gfaidx
+// reserves memory proportional to max_nodes up front, so the server rejects
+// anything above this. Mirrored here so an over-large request fails fast
+// client-side instead of waiting on a round trip to learn the same limit.
+const GFAIDX_MAX_NODES = 1_000_000
+
 function App({ worker, onStopLayout }: AppProps) {
   const [layoutOptions, setLayoutOptions] = useState<LayoutOptions>({
     quality: 2,
@@ -438,7 +444,11 @@ function App({ worker, onStopLayout }: AppProps) {
         setSelectedRegionPathIndex(0)
         const firstPath = paths[0]
         if (firstPath) {
-          const defaultEnd = Math.min(firstPath.start + 100000, firstPath.end)
+          // See handleSelectedRegionPathChange for why null is handled here.
+          const defaultEnd =
+            firstPath.end === null
+              ? firstPath.start + 100000
+              : Math.min(firstPath.start + 100000, firstPath.end)
           setManualRegionReference(firstPath.reference)
           setManualRegionSequence(firstPath.sequence)
           setRegionStart(String(firstPath.start))
@@ -483,7 +493,13 @@ function App({ worker, onStopLayout }: AppProps) {
       setSelectedRegionPathIndex(index)
 
       if (regionPath) {
-        const defaultEnd = Math.min(regionPath.start + 100000, regionPath.end)
+        // regionPath.end is null for a path gfaidx can't size (e.g. a pggb
+        // P-line with no .cdx entry) - there's no known upper bound to clamp
+        // against in that case, so just offer a 100kb window from the start.
+        const defaultEnd =
+          regionPath.end === null
+            ? regionPath.start + 100000
+            : Math.min(regionPath.start + 100000, regionPath.end)
         setManualRegionReference(regionPath.reference)
         setManualRegionSequence(regionPath.sequence)
         setRegionStart(String(regionPath.start))
@@ -536,9 +552,11 @@ function App({ worker, onStopLayout }: AppProps) {
         matchingRegionPath?.start ?? 0,
         annotation.start - flankBp,
       )
-      const flankedEnd = matchingRegionPath
-        ? Math.min(matchingRegionPath.end, annotation.end + flankBp)
-        : annotation.end + flankBp
+      // As above: a null path end means there's nothing to clamp against.
+      const flankedEnd =
+        matchingRegionPath && matchingRegionPath.end !== null
+          ? Math.min(matchingRegionPath.end, annotation.end + flankBp)
+          : annotation.end + flankBp
 
       setSelectedBedAnnotation(annotation)
       setRegionStart(String(flankedStart))
@@ -689,9 +707,14 @@ function App({ worker, onStopLayout }: AppProps) {
     if (currentGraphTicket) {
       try {
         setDownloadingGfa(true)
+        // ?download=true: the backend (gfaidx 2.1.0+) now refuses results
+        // over its display limit (200MB default) on a plain fetch, so the
+        // frontend doesn't load something too large to render - but this
+        // button's whole purpose is handing the user the raw file regardless
+        // of size, which is exactly what that flag is for.
         const resultUrl = `${backendUrl}/api/result/gfaidx/${encodeURIComponent(
           currentGraphTicket,
-        )}`
+        )}?download=true`
         const response = await fetch(resultUrl)
         if (!response.ok) {
           throw new Error(await readBackendError(response))
@@ -800,8 +823,14 @@ function App({ worker, onStopLayout }: AppProps) {
       return
     }
 
-    if (!Number.isInteger(maxNodes) || maxNodes < 1) {
-      setLoadError('Neighborhood size must be a positive integer')
+    if (
+      !Number.isInteger(maxNodes) ||
+      maxNodes < 1 ||
+      maxNodes > GFAIDX_MAX_NODES
+    ) {
+      setLoadError(
+        `Neighborhood size must be between 1 and ${GFAIDX_MAX_NODES.toLocaleString()}`,
+      )
       return
     }
 
@@ -871,7 +900,8 @@ function App({ worker, onStopLayout }: AppProps) {
 
     if (
       selectedRegionPath &&
-      (start < selectedRegionPath.start || end > selectedRegionPath.end)
+      (start < selectedRegionPath.start ||
+        (selectedRegionPath.end !== null && end > selectedRegionPath.end))
     ) {
       setLoadError('Region must stay within the selected coordinate track bounds')
       return
@@ -879,9 +909,13 @@ function App({ worker, onStopLayout }: AppProps) {
 
     if (
       !extractAllHaplotypes &&
-      (!Number.isInteger(maxNodes) || maxNodes < 1)
+      (!Number.isInteger(maxNodes) ||
+        maxNodes < 1 ||
+        maxNodes > GFAIDX_MAX_NODES)
     ) {
-      setLoadError('Neighborhood size must be a positive integer')
+      setLoadError(
+        `Neighborhood size must be between 1 and ${GFAIDX_MAX_NODES.toLocaleString()}`,
+      )
       return
     }
 
